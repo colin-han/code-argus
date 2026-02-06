@@ -22,6 +22,9 @@ export default [
         __dirname: 'readonly',
         __filename: 'readonly',
         NodeJS: 'readonly',
+        AbortController: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
     },
     plugins: {

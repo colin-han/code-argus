@@ -256,8 +256,13 @@ export async function executeCustomAgent(
 
   let tokensUsed = 0;
 
+  let queryStream: ReturnType<typeof query> | null = null;
+  let sigtermHandler: (() => void) | null = null;
+  let sigintHandler: (() => void) | null = null;
+  let isCleaningUp = false;
+
   try {
-    const queryStream = query({
+    queryStream = query({
       prompt: fullPrompt,
       options: {
         cwd: options.repoPath,
@@ -270,6 +275,21 @@ export async function executeCustomAgent(
         },
       },
     });
+
+    const cleanupAndExit = async (signal: string) => {
+      if (isCleaningUp || !queryStream) return;
+      isCleaningUp = true;
+      console.log(`[CustomAgentExecutor:${agent.name}] Received ${signal}, cleaning up...`);
+      try {
+        await queryStream.return?.(undefined);
+      } catch (e) {
+        console.warn(`[CustomAgentExecutor:${agent.name}] Signal cleanup error:`, e);
+      }
+    };
+    sigtermHandler = () => cleanupAndExit('SIGTERM');
+    sigintHandler = () => cleanupAndExit('SIGINT');
+    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', sigintHandler);
 
     // Consume the stream
     for await (const message of queryStream) {
@@ -322,6 +342,17 @@ export async function executeCustomAgent(
       execution_time_ms: Date.now() - startTime,
       error: errorMessage,
     };
+  } finally {
+    if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+
+    if (queryStream && !isCleaningUp) {
+      try {
+        await queryStream.return?.(undefined);
+      } catch (e) {
+        console.warn(`[CustomAgentExecutor:${agent.name}] Finally cleanup error:`, e);
+      }
+    }
   }
 }
 

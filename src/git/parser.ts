@@ -139,6 +139,11 @@ function parseFileDiff(chunk: string): DiffFile | null {
   // Categorize the file
   const category = categorizeFile(path);
 
+  // Skip non-reviewable files (assets, generated, lock files)
+  if (category === 'asset' || category === 'generated' || category === 'lock') {
+    return null;
+  }
+
   // Extract content with intelligent pruning
   const content = extractContent(chunk, category);
 
@@ -225,7 +230,11 @@ function categorizeFile(path: string): FileCategory {
     path.includes('/build/') ||
     fileName.endsWith('.min.js') ||
     fileName.endsWith('.min.css') ||
-    fileName.endsWith('.map')
+    fileName.endsWith('.map') ||
+    // Icon/font generated files
+    /^iconfont\.(js|css|json|svg|ttf|woff2?|eot)$/.test(fileName) ||
+    /\.font\.(js|css|json)$/.test(fileName) ||
+    (path.includes('/iconfont/') && /\.(js|css|json|svg|ttf|woff2?|eot)$/.test(fileName))
   ) {
     return 'generated';
   }

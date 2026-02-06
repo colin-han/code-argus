@@ -85,12 +85,16 @@ import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
  * Default orchestrator options
  */
 const DEFAULT_OPTIONS: Required<
-  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree'>
+  Omit<
+    OrchestratorOptions,
+    'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree' | 'abortController'
+  >
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
   previousReviewData?: PreviousReviewData;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
+  abortController?: AbortController;
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -107,6 +111,8 @@ const DEFAULT_OPTIONS: Required<
   previousReviewData: undefined,
   verifyFixes: undefined,
   requireWorktree: false,
+  abortController: undefined,
+  maxDiffSize: 1 * 1024 * 1024, // 1MB
 };
 
 /**
@@ -1006,6 +1012,42 @@ export class StreamingReviewOrchestrator {
       // Check if diff needs segmentation (large PR handling)
       const diffSize = Buffer.byteLength(context.diff.diff, 'utf8');
       const segmentSizeLimit = 150 * 1024; // 150KB
+      const maxDiffSize = this.options.maxDiffSize;
+
+      if (diffSize > maxDiffSize) {
+        const diffSizeMB = (diffSize / 1024 / 1024).toFixed(2);
+        const limitMB = (maxDiffSize / 1024 / 1024).toFixed(0);
+        const skipReason = `PR diff 过大 (${diffSizeMB}MB > ${limitMB}MB 限制)，跳过审核`;
+        this.progress.warn(skipReason);
+        console.warn(`[StreamingOrchestrator] ${skipReason}`);
+
+        return {
+          summary: skipReason,
+          risk_level: 'low' as const,
+          issues: [],
+          checklist: [],
+          metrics: {
+            total_scanned: 0,
+            confirmed: 0,
+            rejected: 0,
+            uncertain: 0,
+            by_severity: { critical: 0, error: 0, warning: 0, suggestion: 0 },
+            by_category: {
+              logic: 0,
+              security: 0,
+              performance: 0,
+              style: 0,
+              maintainability: 0,
+            },
+            files_reviewed: 0,
+          },
+          metadata: {
+            review_time_ms: Date.now() - startTime,
+            tokens_used: 0,
+            agents_used: [],
+          },
+        };
+      }
 
       if (needsSegmentation(diffSize, { segmentSizeLimit })) {
         this.progress.info(
@@ -2083,8 +2125,10 @@ Write all text (title, description, suggestion) in Chinese.`,
     let tokensUsed = 0;
     let turnCount = 0;
 
+    let queryStream: ReturnType<typeof query> | null = null;
+
     try {
-      const queryStream = query({
+      queryStream = query({
         prompt: fullPrompt,
         options: {
           cwd: reviewRepoPath,
@@ -2096,6 +2140,7 @@ Write all text (title, description, suggestion) in Chinese.`,
           mcpServers: {
             'code-review-tools': mcpServer,
           },
+          abortController: this.options.abortController,
         },
       });
 
@@ -2129,9 +2174,20 @@ Write all text (title, description, suggestion) in Chinese.`,
         }
       }
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
+        return { tokensUsed, checklists: [] };
+      }
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
-      // Re-throw the error so it's properly handled by the caller
       throw error;
+    } finally {
+      if (queryStream) {
+        try {
+          await queryStream.return?.(undefined);
+        } catch (e) {
+          console.warn(`[StreamingOrchestrator] Finally cleanup error for ${agentType}:`, e);
+        }
+      }
     }
 
     // 详细日志：Agent 完成汇总

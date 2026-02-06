@@ -563,7 +563,9 @@ export class StreamingValidator {
     }
 
     // Start the query
-    const queryStream = query({
+    let queryStream: ReturnType<typeof query> | null = null;
+
+    queryStream = query({
       prompt: messageGenerator(),
       options: {
         cwd: this.options.repoPath,
@@ -574,6 +576,24 @@ export class StreamingValidator {
         settingSources: ['project'],
       },
     });
+
+    let isCleaningUp = false;
+    const cleanupAndExit = async (signal: string) => {
+      if (isCleaningUp || !queryStream) return;
+      isCleaningUp = true;
+      console.log(
+        `[StreamingValidator] Received ${signal}, cleaning up session ${session.file}...`
+      );
+      try {
+        await queryStream.return?.(undefined);
+      } catch (e) {
+        console.warn(`[StreamingValidator] Signal cleanup error for session ${session.file}:`, e);
+      }
+    };
+    const sigtermHandler = () => cleanupAndExit('SIGTERM');
+    const sigintHandler = () => cleanupAndExit('SIGINT');
+    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', sigintHandler);
 
     // Send first message after query starts
     sendMessage(firstPrompt);
@@ -830,6 +850,20 @@ export class StreamingValidator {
               'uncertain'
             );
           }
+        }
+      }
+    } finally {
+      process.off('SIGTERM', sigtermHandler);
+      process.off('SIGINT', sigintHandler);
+
+      if (queryStream && !isCleaningUp) {
+        try {
+          await queryStream.return?.(undefined);
+        } catch (e) {
+          console.warn(
+            `[StreamingValidator] Finally cleanup error for session ${session.file}:`,
+            e
+          );
         }
       }
     }

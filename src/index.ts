@@ -4,6 +4,8 @@
  * Main Entry Point
  */
 
+process.setMaxListeners(20);
+
 // Global error handlers - must be set up first to catch any errors during startup
 process.on('uncaughtException', (error, origin) => {
   console.error(`[Argus] Fatal: Uncaught exception from ${origin}:`, error);
@@ -14,6 +16,25 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Argus] Fatal: Unhandled promise rejection:', reason);
   process.exit(1);
 });
+
+// Global AbortController for graceful shutdown
+const globalAbortController = new AbortController();
+let isGlobalShuttingDown = false;
+
+const handleGlobalShutdown = (signal: string) => {
+  if (isGlobalShuttingDown) return;
+  isGlobalShuttingDown = true;
+  console.log(`\n[Argus] Received ${signal}, gracefully shutting down...`);
+  globalAbortController.abort();
+  const forceExitTimer = setTimeout(() => {
+    console.log('[Argus] Cleanup timeout, forcing exit');
+    process.exit(1);
+  }, 10000);
+  forceExitTimer.unref();
+};
+
+process.on('SIGTERM', () => handleGlobalShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
 
 import 'dotenv/config';
 import { initializeEnv } from './config/env.js';
@@ -622,6 +643,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       verifyFixes: options.verifyFixes,
       // Worktree requirement
       requireWorktree: options.requireWorktree,
+      abortController: globalAbortController,
     },
   });
 

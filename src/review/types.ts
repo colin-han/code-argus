@@ -545,6 +545,16 @@ export interface OrchestratorOptions {
    * This ensures agents read code from the correct branch/commit version
    */
   requireWorktree?: boolean;
+  /**
+   * AbortController for graceful shutdown
+   * When abort() is called, running agents will be interrupted and cleanup will occur
+   */
+  abortController?: AbortController;
+  /**
+   * Maximum diff size in bytes before skipping review (default: 1MB)
+   * Diffs exceeding this limit will be skipped entirely to avoid excessive resource usage
+   */
+  maxDiffSize?: number;
 }
 
 /**

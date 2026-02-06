@@ -232,8 +232,13 @@ Call this after deep investigation of unresolved/unclear issues.`,
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
   // Execute agent
+  let queryStream: ReturnType<typeof query> | null = null;
+  let sigtermHandler: (() => void) | null = null;
+  let sigintHandler: (() => void) | null = null;
+  let isCleaningUp = false;
+
   try {
-    const queryStream = query({
+    queryStream = query({
       prompt: fullPrompt,
       options: {
         cwd: repoPath,
@@ -247,6 +252,21 @@ Call this after deep investigation of unresolved/unclear issues.`,
       },
     });
 
+    const cleanupAndExit = async (signal: string) => {
+      if (isCleaningUp || !queryStream) return;
+      isCleaningUp = true;
+      console.log(`[FixVerifier] Received ${signal}, cleaning up...`);
+      try {
+        await queryStream.return?.(undefined);
+      } catch (e) {
+        console.warn(`[FixVerifier] Signal cleanup error:`, e);
+      }
+    };
+    sigtermHandler = () => cleanupAndExit('SIGTERM');
+    sigintHandler = () => cleanupAndExit('SIGINT');
+    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', sigintHandler);
+
     // Consume the stream
     for await (const message of queryStream) {
       if (message.type === 'result' && message.usage) {
@@ -257,6 +277,17 @@ Call this after deep investigation of unresolved/unclear issues.`,
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[FixVerifier] Error during verification: ${errorMessage}`);
     progress?.error(`修复验证失败: ${errorMessage}`);
+  } finally {
+    if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+
+    if (queryStream && !isCleaningUp) {
+      try {
+        await queryStream.return?.(undefined);
+      } catch (e) {
+        console.warn(`[FixVerifier] Finally cleanup error:`, e);
+      }
+    }
   }
 
   // Process issues that were only screened (resolved in Phase 1)
