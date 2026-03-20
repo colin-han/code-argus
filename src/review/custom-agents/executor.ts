@@ -13,7 +13,7 @@ import {
 import { z } from 'zod';
 import type { LoadedCustomAgent, CustomAgentResult, CustomAgentIssue } from './types.js';
 import type { RawIssue, IssueCategory, Severity } from '../types.js';
-import { DEFAULT_AGENT_MODEL } from '../constants.js';
+import { getAgentModel } from '../constants.js';
 import { CUSTOM_AGENT_DEFAULTS } from './types.js';
 
 // ============================================================================
@@ -269,7 +269,7 @@ export async function executeCustomAgent(
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns: options.maxTurns || 20,
-        model: DEFAULT_AGENT_MODEL,
+        model: getAgentModel(),
         mcpServers: {
           'custom-agent-tools': mcpServer,
         },

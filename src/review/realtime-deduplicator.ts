@@ -11,7 +11,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { RawIssue } from './types.js';
 import { getApiKey } from '../config/env.js';
 import { extractJSON } from './utils/json-parser.js';
-import { DEFAULT_REALTIME_DEDUP_MODEL } from './constants.js';
+import { getRealtimeDedupModel } from './constants.js';
 
 /**
  * Options for the realtime deduplicator
@@ -174,7 +174,7 @@ export class RealtimeDeduplicator {
 
     try {
       const response = await this.client.messages.create({
-        model: DEFAULT_REALTIME_DEDUP_MODEL,
+        model: getRealtimeDedupModel(),
         max_tokens: 1024,
         messages: [
           {

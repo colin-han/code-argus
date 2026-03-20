@@ -14,7 +14,7 @@ import type {
   VerificationStatus,
   FixVerificationEvidence,
 } from './types.js';
-import { DEFAULT_AGENT_MODEL } from './constants.js';
+import { getAgentModel } from './constants.js';
 import type { IProgressPrinter } from '../cli/index.js';
 
 /**
@@ -245,7 +245,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns: Math.max(30, previousReview.issues.length * 5), // Scale with issue count
-        model: DEFAULT_AGENT_MODEL,
+        model: getAgentModel(),
         mcpServers: {
           'fix-verifier-tools': mcpServer,
         },

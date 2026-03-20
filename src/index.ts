@@ -202,7 +202,10 @@ Config subcommands:
 Config keys:
   api-key       Anthropic API key
   base-url      Custom API base URL (for proxies)
-  model         Model to use (e.g., claude-sonnet-4-5-20250929)
+  model         Shared fallback model for all review stages
+  agent-model   Model for reviewer agents / validator / fix verifier
+  light-model   Model for agent selection and custom agent matching
+  dedup-model   Model for realtime issue deduplication
 
 Examples:
   # Branch-based review (initial PR review)
@@ -246,12 +249,18 @@ Subcommands:
 Keys:
   api-key       Anthropic API key
   base-url      Custom API base URL (for proxies)
-  model         Model to use (e.g., claude-sonnet-4-5-20250929)
+  model         Shared fallback model for all review stages
+  agent-model   Model for reviewer agents / validator / fix verifier
+  light-model   Model for agent selection and custom agent matching
+  dedup-model   Model for realtime issue deduplication
 
 Examples:
   argus config set api-key sk-ant-api03-xxxxx
   argus config set base-url https://my-proxy.com/v1
   argus config set model claude-sonnet-4-5-20250929
+  argus config set agent-model qwen3-coder-plus
+  argus config set light-model qwen3-coder-plus
+  argus config set dedup-model qwen3-coder-plus
   argus config get api-key
   argus config list
   argus config delete base-url
@@ -275,12 +284,21 @@ function runConfigCommand(args: string[]): void {
   }
 
   // Map CLI key names to config keys
-  const keyMap: Record<string, 'apiKey' | 'baseUrl' | 'model'> = {
+  const keyMap: Record<
+    string,
+    'apiKey' | 'baseUrl' | 'model' | 'agentModel' | 'lightModel' | 'dedupModel'
+  > = {
     'api-key': 'apiKey',
     apikey: 'apiKey',
     'base-url': 'baseUrl',
     baseurl: 'baseUrl',
     model: 'model',
+    'agent-model': 'agentModel',
+    agentmodel: 'agentModel',
+    'light-model': 'lightModel',
+    lightmodel: 'lightModel',
+    'dedup-model': 'dedupModel',
+    dedupmodel: 'dedupModel',
   };
 
   switch (subcommand) {
@@ -297,7 +315,9 @@ function runConfigCommand(args: string[]): void {
       const configKey = keyMap[key];
       if (!configKey) {
         console.error(`Error: Unknown config key "${key}"`);
-        console.error('Valid keys: api-key, base-url, model');
+        console.error(
+          'Valid keys: api-key, base-url, model, agent-model, light-model, dedup-model'
+        );
         process.exit(1);
       }
 
@@ -321,7 +341,9 @@ function runConfigCommand(args: string[]): void {
       const configKey = keyMap[key];
       if (!configKey) {
         console.error(`Error: Unknown config key "${key}"`);
-        console.error('Valid keys: api-key, base-url, model');
+        console.error(
+          'Valid keys: api-key, base-url, model, agent-model, light-model, dedup-model'
+        );
         process.exit(1);
       }
 
@@ -356,6 +378,15 @@ function runConfigCommand(args: string[]): void {
         if (config.model) {
           console.log(`model:     ${config.model}`);
         }
+        if (config.agentModel) {
+          console.log(`agent-model: ${config.agentModel}`);
+        }
+        if (config.lightModel) {
+          console.log(`light-model: ${config.lightModel}`);
+        }
+        if (config.dedupModel) {
+          console.log(`dedup-model: ${config.dedupModel}`);
+        }
       }
 
       console.log('=================================');
@@ -375,7 +406,9 @@ function runConfigCommand(args: string[]): void {
       const configKey = keyMap[key];
       if (!configKey) {
         console.error(`Error: Unknown config key "${key}"`);
-        console.error('Valid keys: api-key, base-url, model');
+        console.error(
+          'Valid keys: api-key, base-url, model, agent-model, light-model, dedup-model'
+        );
         process.exit(1);
       }
 

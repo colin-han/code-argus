@@ -62,7 +62,10 @@ argus config set api-key sk-ant-xxx
 # 设置配置
 argus config set api-key sk-ant-xxx      # API 密钥
 argus config set base-url https://proxy  # 自定义代理 URL
-argus config set model claude-sonnet-4-5-20250929  # 模型
+argus config set model qwen3-coder-plus         # 所有阶段的共享兜底模型
+argus config set agent-model qwen3-coder-plus   # 审查 Agent / 验证器模型
+argus config set light-model qwen3-coder-plus   # 选择器 / 匹配器模型
+argus config set dedup-model qwen3-coder-plus   # 实时去重模型
 
 # 查看配置
 argus config list                         # 列出所有配置
@@ -72,6 +75,12 @@ argus config path                         # 显示配置文件路径
 # 删除配置
 argus config delete base-url
 ```
+
+模型配置优先级：
+
+- `agent-model` / `light-model` / `dedup-model` 会覆盖共享的 `model`
+- 共享 `model` 作为所有审查阶段的兜底值
+- 环境变量仍然优先于配置文件
 
 ## 使用方法
 

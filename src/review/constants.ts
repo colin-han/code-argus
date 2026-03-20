@@ -2,6 +2,8 @@
  * 审查模块常量
  */
 
+import { getAgentModelConfig, getDedupModelConfig, getLightModelConfig } from '../config/env.js';
+
 /**
  * 所有 Agent 的默认模型
  * 使用 Opus 以获得最高质量的代码审查
@@ -19,6 +21,38 @@ export const DEFAULT_LIGHT_MODEL = 'claude-sonnet-4-5-20250929';
  * 使用 Haiku 以提高速度和成本效率，因为每个重叠问题都会运行
  */
 export const DEFAULT_REALTIME_DEDUP_MODEL = 'claude-haiku-4-5-20251001';
+
+/**
+ * 解析最终要使用的模型。
+ * 优先使用细分配置，其次回退到共享模型，最后使用内置默认。
+ */
+export function resolveReviewModel(
+  configuredModel: string | undefined,
+  defaultModel: string
+): string {
+  return configuredModel || defaultModel;
+}
+
+/**
+ * 获取专业审查 Agent 的模型。
+ */
+export function getAgentModel(): string {
+  return resolveReviewModel(getAgentModelConfig(), DEFAULT_AGENT_MODEL);
+}
+
+/**
+ * 获取轻量级分类任务的模型。
+ */
+export function getLightModel(): string {
+  return resolveReviewModel(getLightModelConfig(), DEFAULT_LIGHT_MODEL);
+}
+
+/**
+ * 获取实时去重任务的模型。
+ */
+export function getRealtimeDedupModel(): string {
+  return resolveReviewModel(getDedupModelConfig(), DEFAULT_REALTIME_DEDUP_MODEL);
+}
 
 /**
  * Agent 的最大思考 token 数（0 = 禁用扩展思考）

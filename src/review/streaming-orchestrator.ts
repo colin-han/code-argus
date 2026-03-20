@@ -52,7 +52,7 @@ import { createStreamingValidator, type StreamingValidator } from './streaming-v
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
 import {
-  DEFAULT_AGENT_MODEL,
+  getAgentModel,
   getRecommendedMaxTurns,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY_MS,
@@ -1425,7 +1425,7 @@ export class StreamingReviewOrchestrator {
         return content;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to read diff file: ${message}`);
+        throw new Error(`Failed to read diff file: ${message}`, { cause: error });
       }
     }
 
@@ -1444,7 +1444,7 @@ export class StreamingReviewOrchestrator {
         return content;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to read diff from stdin: ${message}`);
+        throw new Error(`Failed to read diff from stdin: ${message}`, { cause: error });
       }
     }
 
@@ -1589,7 +1589,8 @@ export class StreamingReviewOrchestrator {
               ? ' (分支可能已在 PR 合并后被删除)'
               : '';
             throw new Error(
-              `Worktree required but failed to resolve sourceRef "${sourceRefStr}": ${errorMsg}${hint}`
+              `Worktree required but failed to resolve sourceRef "${sourceRefStr}": ${errorMsg}${hint}`,
+              { cause: error }
             );
           }
           // Otherwise log warning and continue without worktree
@@ -2135,7 +2136,7 @@ Write all text (title, description, suggestion) in Chinese.`,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           maxTurns, // Dynamic based on diff size
-          model: DEFAULT_AGENT_MODEL,
+          model: getAgentModel(),
           settingSources: ['project'], // Load CLAUDE.md from repo
           mcpServers: {
             'code-review-tools': mcpServer,

@@ -17,8 +17,14 @@ export interface ArgusConfig {
   apiKey?: string;
   /** Custom base URL (for proxies) */
   baseUrl?: string;
-  /** Model to use */
+  /** Shared fallback model for all review stages */
   model?: string;
+  /** Review agent model */
+  agentModel?: string;
+  /** Lightweight classification model */
+  lightModel?: string;
+  /** Realtime deduplication model */
+  dedupModel?: string;
 }
 
 /**

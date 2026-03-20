@@ -11,6 +11,8 @@
 
 import { loadConfig } from './store.js';
 
+type ReviewModelConfigKey = 'agentModel' | 'lightModel' | 'dedupModel';
+
 /**
  * Authentication configuration result
  */
@@ -135,4 +137,38 @@ export function getBaseUrl(): string | undefined {
 export function getModel(): string | undefined {
   const config = loadConfig();
   return process.env.ARGUS_ANTHROPIC_MODEL || process.env.ANTHROPIC_MODEL || config.model;
+}
+
+function getScopedModel(configKey: ReviewModelConfigKey): string | undefined {
+  const config = loadConfig();
+  return (
+    process.env.ARGUS_ANTHROPIC_MODEL ||
+    process.env.ANTHROPIC_MODEL ||
+    config[configKey] ||
+    config.model
+  );
+}
+
+/**
+ * Get review agent model with fallback chain
+ * Priority: env var > agentModel > model
+ */
+export function getAgentModelConfig(): string | undefined {
+  return getScopedModel('agentModel');
+}
+
+/**
+ * Get lightweight model with fallback chain
+ * Priority: env var > lightModel > model
+ */
+export function getLightModelConfig(): string | undefined {
+  return getScopedModel('lightModel');
+}
+
+/**
+ * Get realtime dedup model with fallback chain
+ * Priority: env var > dedupModel > model
+ */
+export function getDedupModelConfig(): string | undefined {
+  return getScopedModel('dedupModel');
 }

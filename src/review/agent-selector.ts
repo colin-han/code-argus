@@ -8,7 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { DiffFile, FileCategory } from '../git/parser.js';
 import type { AgentType } from './types.js';
-import { DEFAULT_LIGHT_MODEL } from './constants.js';
+import { getLightModel } from './constants.js';
 
 // ============================================================================
 // Types
@@ -433,7 +433,7 @@ ${diffFiles.length > 30 ? `\n... 还有 ${diffFiles.length - 30} 个文件` : ''
 
   try {
     const response = await client.messages.create({
-      model: DEFAULT_LIGHT_MODEL,
+      model: getLightModel(),
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }],
     });

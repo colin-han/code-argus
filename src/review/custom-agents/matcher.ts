@@ -17,7 +17,7 @@ import type {
   RuleTrigger,
 } from './types.js';
 import { CUSTOM_AGENT_DEFAULTS } from './types.js';
-import { DEFAULT_LIGHT_MODEL } from '../constants.js';
+import { getLightModel } from '../constants.js';
 
 // ============================================================================
 // Types
@@ -384,7 +384,7 @@ ${context.diff_summary ? `### Diff 摘要\n\`\`\`\n${context.diff_summary}\n\`\`
 
   try {
     const response = await client.messages.create({
-      model: DEFAULT_LIGHT_MODEL,
+      model: getLightModel(),
       max_tokens: 300,
       messages: [{ role: 'user', content: prompt }],
     });

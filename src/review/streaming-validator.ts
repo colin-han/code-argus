@@ -24,7 +24,7 @@ import {
   DEFAULT_CHALLENGE_MODE,
   MAX_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
-  DEFAULT_AGENT_MODEL,
+  getAgentModel,
   getValidatorMaxTurns,
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
@@ -394,8 +394,8 @@ export class StreamingValidator {
     let sessionId = '';
 
     // Track current issue being validated
-    let currentIssue: RawIssue | null = null;
-    let currentRound = 0;
+    let currentIssue: RawIssue | null;
+    let currentRound;
     let currentResponses: ParsedValidationResponse[] = [];
 
     // Promise to wait for new issues
@@ -572,7 +572,7 @@ export class StreamingValidator {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns,
-        model: DEFAULT_AGENT_MODEL,
+        model: getAgentModel(),
         settingSources: ['project'],
       },
     });
