@@ -14,6 +14,7 @@
 - **自定义规则** - 支持团队级审查规则和检查清单
 - **增量审查** - 只审查新增的提交，提升效率
 - **服务集成** - JSON 事件流输出，便于 CI/CD 和外部服务集成
+- **报告插件系统** - 可扩展的插件架构，内置 Markdown/JSON/Summary/PR-Comments/JIRA 5 种输出，支持第三方插件
 
 ## 安装
 
@@ -396,6 +397,93 @@ argus review /repo feature main --previous-review=./review.json --no-verify-fixe
 
 ---
 
+### `--reporters=<list>`
+
+**指定报告输出插件**
+
+以逗号分隔的插件名列表，替代默认的 markdown 输出。
+
+```bash
+# 使用 JSON 格式输出
+argus review /repo feature main --reporters=json
+
+# 同时使用多个插件
+argus review /repo feature main --reporters=markdown,jira
+
+# 使用旧的 --format 参数（向后兼容）
+argus review /repo feature main --format=summary
+```
+
+**内置插件：**
+
+| 插件名        | 类型      | 说明                           |
+| ------------- | --------- | ------------------------------ |
+| `markdown`    | formatter | Markdown 格式报告（默认）      |
+| `json`        | formatter | JSON 格式报告                  |
+| `summary`     | formatter | 简短摘要                       |
+| `pr-comments` | formatter | PR 评论格式                    |
+| `jira`        | exporter  | 创建 JIRA Issue 并同步修复状态 |
+
+---
+
+### `--reporter-opt=<plugin.key=value>`
+
+**传递配置给报告插件**
+
+```bash
+# 配置 JIRA 插件
+argus review /repo feature main --reporters=markdown,jira \
+  --reporter-opt=jira.projectKey=PROJ \
+  --reporter-opt=jira.baseUrl=https://jira.example.com \
+  --reporter-opt=jira.minSeverity=error \
+  --reporter-opt=jira.dryRun=true
+```
+
+**JIRA 插件配置项：**
+
+| 配置项        | 说明                   | 默认值                       |
+| ------------- | ---------------------- | ---------------------------- |
+| `projectKey`  | JIRA 项目键（必填）    | -                            |
+| `baseUrl`     | JIRA 服务器地址        | `$JIRA_BASE_URL`             |
+| `username`    | JIRA 用户名            | `$JIRA_USERNAME`             |
+| `apiToken`    | JIRA API Token         | `$JIRA_API_TOKEN`            |
+| `issueType`   | 创建的 Issue 类型      | `Bug`                        |
+| `minSeverity` | 最低上报严重级别       | `warning`                    |
+| `labels`      | Issue 标签（逗号分隔） | `code-review,auto-generated` |
+| `dryRun`      | 干跑模式，不实际创建   | `false`                      |
+
+---
+
+### `--reporter-dir=<path>`
+
+**第三方报告插件目录**
+
+从指定目录加载自定义报告插件，可多次使用。插件文件需匹配 `*-reporter.ts` 或 `*-reporter.js` 命名模式。
+
+```bash
+argus review /repo feature main --reporter-dir=./my-reporters --reporters=custom
+```
+
+**自定义插件示例：**
+
+```typescript
+// my-reporters/slack-reporter.ts
+import type { ReporterPlugin } from 'code-argus';
+
+export default {
+  name: 'slack',
+  description: 'Send review summary to Slack',
+  type: 'exporter',
+  async execute(report, context, config) {
+    const webhookUrl = config.webhookUrl as string;
+    // ... 发送到 Slack
+    return { reporter: 'slack', success: true, output: 'Sent to Slack' };
+  },
+} satisfies ReporterPlugin;
+```
+
+---
+
 ## 使用示例
 
 ### 基础用法
@@ -468,6 +556,25 @@ argus review /repo feature main --skip-validation --json-logs
 argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
 ```
 
+### JIRA 集成
+
+```bash
+# 审查并将问题上报到 JIRA
+argus review /repo feature main --reporters=markdown,jira \
+  --reporter-opt=jira.projectKey=PROJ \
+  --reporter-opt=jira.minSeverity=error
+
+# 干跑模式（预览但不实际创建 JIRA Issue）
+argus review /repo feature main --reporters=jira \
+  --reporter-opt=jira.projectKey=PROJ \
+  --reporter-opt=jira.dryRun=true
+
+# 修复验证 + JIRA 状态同步
+argus review /repo feature main --previous-review=./review-1.json \
+  --reporters=markdown,jira \
+  --reporter-opt=jira.projectKey=PROJ
+```
+
 ---
 
 ## 项目结构
@@ -490,7 +597,16 @@ src/
 │   ├── realtime-deduplicator.ts  # 实时去重
 │   ├── deduplicator.ts   # 批量语义去重
 │   ├── aggregator.ts     # 问题聚合
-│   ├── report.ts         # 报告生成
+│   ├── report.ts         # 报告生成（legacy）
+│   ├── reporters/        # 报告插件系统
+│   │   ├── types.ts      # 插件接口定义
+│   │   ├── registry.ts   # 插件注册与执行
+│   │   ├── index.ts      # 导出与内置注册
+│   │   ├── markdown-reporter.ts  # Markdown 报告插件
+│   │   ├── json-reporter.ts      # JSON 报告插件
+│   │   ├── summary-reporter.ts   # 摘要报告插件
+│   │   ├── pr-comments-reporter.ts # PR 评论插件
+│   │   └── jira-reporter.ts      # JIRA 集成插件
 │   ├── prompts/          # Agent Prompt 构建
 │   ├── standards/        # 项目标准提取
 │   ├── rules/            # 自定义规则加载
@@ -544,7 +660,7 @@ src/
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  6. 生成报告    │  聚合问题，生成结构化报告
+│  6. 报告插件    │  通过插件系统输出报告 & 上报外部系统
 └─────────────────┘
 ```
 

@@ -14,6 +14,7 @@ English | [中文](./README.zh-CN.md)
 - **Custom Rules** - Team-specific review rules and checklists
 - **Incremental Review** - Only review new commits for better efficiency
 - **Service Integration** - JSON event stream output for CI/CD and external service integration
+- **Report Plugin System** - Extensible plugin architecture with 5 built-in outputs (Markdown/JSON/Summary/PR-Comments/JIRA), supports third-party plugins
 
 ## Installation
 
@@ -468,6 +469,53 @@ argus review /repo feature main --skip-validation --json-logs
 argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
 ```
 
+### JIRA Integration
+
+```bash
+# Review and report issues to JIRA
+argus review /repo feature main --reporters=markdown,jira \
+  --reporter-opt=jira.projectKey=PROJ \
+  --reporter-opt=jira.minSeverity=error
+
+# Dry run (preview without creating JIRA issues)
+argus review /repo feature main --reporters=jira \
+  --reporter-opt=jira.projectKey=PROJ \
+  --reporter-opt=jira.dryRun=true
+
+# Fix verification + JIRA status sync
+argus review /repo feature main --previous-review=./review-1.json \
+  --reporters=markdown,jira \
+  --reporter-opt=jira.projectKey=PROJ
+```
+
+### Reporter Plugins
+
+```bash
+# Use JSON output format
+argus review /repo feature main --reporters=json
+
+# Multiple reporters simultaneously
+argus review /repo feature main --reporters=markdown,jira
+
+# Configure reporter plugins
+argus review /repo feature main --reporters=jira \
+  --reporter-opt=jira.projectKey=PROJ \
+  --reporter-opt=jira.dryRun=true
+
+# Load third-party reporter plugins
+argus review /repo feature main --reporter-dir=./my-reporters --reporters=custom
+```
+
+**Built-in Plugins:**
+
+| Plugin        | Type      | Description                          |
+| ------------- | --------- | ------------------------------------ |
+| `markdown`    | formatter | Markdown report (default)            |
+| `json`        | formatter | JSON report                          |
+| `summary`     | formatter | Short summary                        |
+| `pr-comments` | formatter | PR comment format                    |
+| `jira`        | exporter  | Create JIRA issues & sync fix status |
+
 ---
 
 ## Project Structure
@@ -490,7 +538,16 @@ src/
 │   ├── realtime-deduplicator.ts  # Realtime deduplication
 │   ├── deduplicator.ts   # Batch semantic dedup
 │   ├── aggregator.ts     # Issue aggregation
-│   ├── report.ts         # Report generation
+│   ├── report.ts         # Report generation (legacy)
+│   ├── reporters/        # Report plugin system
+│   │   ├── types.ts      # Plugin interface definitions
+│   │   ├── registry.ts   # Plugin registration & execution
+│   │   ├── index.ts      # Exports & built-in registration
+│   │   ├── markdown-reporter.ts  # Markdown report plugin
+│   │   ├── json-reporter.ts      # JSON report plugin
+│   │   ├── summary-reporter.ts   # Summary report plugin
+│   │   ├── pr-comments-reporter.ts # PR comments plugin
+│   │   └── jira-reporter.ts      # JIRA integration plugin
 │   ├── prompts/          # Agent prompt building
 │   ├── standards/        # Project standards extraction
 │   ├── rules/            # Custom rules loading
@@ -544,7 +601,7 @@ src/
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  6. Generate Report │  Aggregate issues, generate structured report
+│  6. Report Plugins │  Output reports & report to external systems via plugins
 └─────────────────┘
 ```
 

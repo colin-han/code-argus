@@ -143,6 +143,8 @@ export interface ValidatedIssue extends RawIssue {
   revised_description?: string;
   /** Revised severity (if updated) */
   revised_severity?: Severity;
+  /** External system references (written back by reporter plugins) */
+  externalRefs?: Record<string, import('./reporters/types.js').ExternalReference>;
 }
 
 // ============================================================================
@@ -311,6 +313,8 @@ export interface PreviousIssue {
   confidence: number;
   /** Source agent that found this issue */
   source_agent: AgentType;
+  /** External system references (carried from previous review for sync) */
+  externalRefs?: Record<string, import('./reporters/types.js').ExternalReference>;
 }
 
 /**

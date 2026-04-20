@@ -42,6 +42,12 @@ flowchart LR
         F1[context 对象]
     end
 
+    subgraph Reporters["Reporter 插件系统"]
+        G1{ReporterRegistry}
+        G2[formatter<br/>Markdown/JSON/Summary/PR]
+        G3[exporter<br/>JIRA / Custom]
+    end
+
     A1 --> B1
     A2 --> B2
     A3 --> B2
@@ -68,3 +74,6 @@ flowchart LR
     C2 --> F1
     D3 --> F1
     E5 --> F1
+    F1 --> G1
+    G1 --> G2
+    G1 --> G3

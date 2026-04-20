@@ -25,6 +25,7 @@ export default [
         AbortController: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        fetch: 'readonly',
       },
     },
     plugins: {

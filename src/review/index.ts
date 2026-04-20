@@ -110,20 +110,43 @@ export {
   type AggregationResult,
 } from './aggregator.js';
 
-// Report generation
+// Report generation (legacy - prefer reporters plugin system)
 export {
   calculateMetrics,
   determineRiskLevel,
   generateSummary,
   generateReport,
+  /** @deprecated Use reporters plugin system instead */
   formatAsJson,
+  /** @deprecated Use reporters plugin system instead */
   formatAsMarkdown,
+  /** @deprecated Use reporters plugin system instead */
   formatAsSummary,
+  /** @deprecated Use reporters plugin system instead */
   formatAsPRComments,
+  /** @deprecated Use reporters plugin system instead */
   formatReport,
   type ReportOptions,
   type PRComment,
 } from './report.js';
+
+// Reporter plugin system
+export {
+  createDefaultRegistry,
+  ReporterRegistry,
+  type ReporterPlugin,
+  type ReporterContext,
+  type ReporterConfig,
+  type ReporterResult,
+  type IssueUpdate,
+  type ExternalReference,
+  type ExecuteAllResult,
+  markdownReporter,
+  jsonReporter,
+  summaryReporter,
+  prCommentsReporter,
+  jiraReporter,
+} from './reporters/index.js';
 
 // Prompts (for advanced usage)
 export {

@@ -46,12 +46,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import {
-  reviewByRefs,
-  formatReport,
-  loadPreviousReview,
-  validatePreviousReviewData,
-} from './review/index.js';
+import { reviewByRefs, loadPreviousReview, validatePreviousReviewData } from './review/index.js';
+import { createDefaultRegistry } from './review/reporters/index.js';
+import type { ReporterConfig, ReporterContext } from './review/reporters/types.js';
+import type { ReviewReport } from './review/types.js';
 import { detectRefType } from './git/ref.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
 import type { PreviousReviewData } from './review/types.js';
@@ -464,6 +462,9 @@ function parseOptions(args: string[]): {
   verifyFixes?: boolean;
   requireWorktree?: boolean;
   externalDiff: ExternalDiffOptions;
+  reporters: string[];
+  reporterOpts: Record<string, ReporterConfig>;
+  reporterDirs: string[];
 } {
   const options: {
     language: 'en' | 'zh';
@@ -477,6 +478,9 @@ function parseOptions(args: string[]): {
     verifyFixes?: boolean;
     requireWorktree?: boolean;
     externalDiff: ExternalDiffOptions;
+    reporters: string[];
+    reporterOpts: Record<string, ReporterConfig>;
+    reporterDirs: string[];
   } = {
     language: 'zh',
     configDirs: [],
@@ -489,6 +493,9 @@ function parseOptions(args: string[]): {
     verifyFixes: undefined,
     requireWorktree: undefined,
     externalDiff: {},
+    reporters: [],
+    reporterOpts: {},
+    reporterDirs: [],
   };
 
   for (const arg of args) {
@@ -547,6 +554,50 @@ function parseOptions(args: string[]): {
       options.externalDiff.disableSmartMergeFilter = true;
     } else if (arg === '--require-worktree') {
       options.requireWorktree = true;
+    } else if (arg.startsWith('--reporters=')) {
+      const val = arg.split('=')[1];
+      if (val) {
+        options.reporters = val.split(',').map((r) => r.trim());
+      }
+    } else if (arg.startsWith('--format=')) {
+      // Backward compatibility: --format=X maps to --reporters=X
+      const val = arg.split('=')[1];
+      if (val && options.reporters.length === 0) {
+        options.reporters = [val.trim()];
+      }
+    } else if (arg.startsWith('--reporter-opt=')) {
+      // Format: --reporter-opt=pluginName.key=value
+      const val = arg.split('=').slice(1).join('=');
+      if (val) {
+        const dotIndex = val.indexOf('.');
+        if (dotIndex > 0) {
+          const pluginName = val.substring(0, dotIndex);
+          const rest = val.substring(dotIndex + 1);
+          const eqIndex = rest.indexOf('=');
+          if (eqIndex > 0) {
+            const key = rest.substring(0, eqIndex);
+            const value = rest.substring(eqIndex + 1);
+            if (!options.reporterOpts[pluginName]) {
+              options.reporterOpts[pluginName] = {};
+            }
+            // Parse boolean and number values
+            if (value === 'true') {
+              options.reporterOpts[pluginName]![key] = true;
+            } else if (value === 'false') {
+              options.reporterOpts[pluginName]![key] = false;
+            } else if (/^\d+$/.test(value)) {
+              options.reporterOpts[pluginName]![key] = Number(value);
+            } else {
+              options.reporterOpts[pluginName]![key] = value;
+            }
+          }
+        }
+      }
+    } else if (arg.startsWith('--reporter-dir=')) {
+      const dir = arg.split('=')[1];
+      if (dir) {
+        options.reporterDirs.push(dir);
+      }
     }
   }
 
@@ -557,6 +608,47 @@ function parseOptions(args: string[]): {
   }
 
   return options;
+}
+
+/**
+ * Load custom reporter plugins from a directory.
+ * Scans for *-reporter.ts / *-reporter.js files, dynamically imports them,
+ * and registers them in the given registry.
+ */
+async function loadReporterPlugins(
+  registry: ReturnType<typeof createDefaultRegistry>,
+  dirPath: string
+): Promise<void> {
+  const { readdirSync } = await import('node:fs');
+  const { resolve } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+
+  let entries: string[];
+  try {
+    entries = readdirSync(dirPath);
+  } catch {
+    return; // Directory doesn't exist or can't be read
+  }
+
+  const reporterFiles = entries.filter(
+    (f) => (f.endsWith('-reporter.ts') || f.endsWith('-reporter.js')) && !f.startsWith('.')
+  );
+
+  for (const file of reporterFiles) {
+    const fullPath = resolve(dirPath, file);
+    try {
+      const mod = await import(pathToFileURL(fullPath).href);
+      const plugin = mod.default || mod.plugin;
+      if (plugin && plugin.name && plugin.execute && typeof plugin.execute === 'function') {
+        registry.register(plugin);
+      } else {
+        console.error(`Warning: ${file} does not export a valid ReporterPlugin`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`Warning: Failed to load reporter plugin ${file}: ${msg}`);
+    }
+  }
 }
 
 /**
@@ -698,12 +790,116 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       }
     }
   } else {
-    // In normal mode, output formatted markdown report
-    const formatted = formatReport(report, {
-      format: 'markdown',
+    // Use reporter plugin system
+    const reporterNames = options.reporters.length > 0 ? options.reporters : ['markdown'];
+
+    const registry = createDefaultRegistry();
+
+    // Load custom reporter plugins from directories
+    for (const dir of options.reporterDirs) {
+      try {
+        await loadReporterPlugins(registry, dir);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`Warning: Failed to load reporter plugins from ${dir}: ${msg}`);
+      }
+    }
+
+    const reporterContext: ReporterContext = {
+      repoPath,
+      sourceRef: sourceRef ?? undefined,
+      targetRef: targetRef ?? undefined,
       language: options.language,
-    });
-    console.log(formatted);
+      verbose: options.verbose,
+    };
+
+    const { results, updatedReport } = await registry.executeAll(
+      reporterNames,
+      report,
+      reporterContext,
+      options.reporterOpts
+    );
+
+    // Output formatter results to stdout
+    for (const result of results) {
+      if (result.output && result.success) {
+        const plugin = registry.get(result.reporter);
+        if (plugin?.type === 'formatter') {
+          console.log(result.output);
+        } else {
+          // Exporter output goes to stderr
+          if (process.stderr.writable) {
+            try {
+              process.stderr.write(result.output + '\n');
+            } catch {
+              // Ignore write errors
+            }
+          }
+        }
+      }
+      if (!result.success && result.error) {
+        console.error(`Reporter '${result.reporter}' failed: ${result.error}`);
+      }
+    }
+
+    // Sync external systems if fix verification was performed
+    if (options.verifyFixes && previousReviewData && updatedReport.fix_verification) {
+      const prevReport: ReviewReport = {
+        summary: '',
+        risk_level: 'low',
+        issues: previousReviewData.issues.map((i) => ({
+          ...i,
+          validation_status: 'confirmed' as const,
+          grounding_evidence: {
+            checked_files: [],
+            checked_symbols: [],
+            related_context: '',
+            reasoning: '',
+          },
+          final_confidence: i.confidence ?? 0.8,
+        })),
+        checklist: [],
+        metrics: {
+          total_scanned: 0,
+          confirmed: 0,
+          rejected: 0,
+          uncertain: 0,
+          by_severity: { critical: 0, error: 0, warning: 0, suggestion: 0 },
+          by_category: {
+            security: 0,
+            logic: 0,
+            performance: 0,
+            style: 0,
+            maintainability: 0,
+          },
+          files_reviewed: 0,
+        },
+        metadata: { review_time_ms: 0, tokens_used: 0, agents_used: [] },
+      };
+
+      const syncResults = await registry.syncAll(
+        reporterNames,
+        updatedReport,
+        prevReport,
+        reporterContext,
+        options.reporterOpts
+      );
+
+      for (const result of syncResults) {
+        if (result.output) {
+          if (process.stderr.writable) {
+            try {
+              process.stderr.write(result.output + '\n');
+            } catch {
+              // Ignore write errors
+            }
+          }
+        }
+        if (!result.success && result.error) {
+          console.error(`Reporter sync '${result.reporter}' failed: ${result.error}`);
+        }
+      }
+    }
   }
 }
 
