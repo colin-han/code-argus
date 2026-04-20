@@ -5,7 +5,7 @@
  * 1. ARGUS_ANTHROPIC_BASE_URL + ARGUS_ANTHROPIC_API_KEY (both required)
  * 2. ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (Claude Code OAuth)
  * 3. ANTHROPIC_API_KEY (official API with default endpoint)
- * 4. Config file (~/.argus/config.json)
+ * 4. Config file (local <repoPath>/.argus/config.json > global ~/.argus/config.json)
  * 5. Error if none configured
  */
 

@@ -51,7 +51,18 @@ import { createDefaultRegistry } from './review/reporters/index.js';
 import type { ReporterConfig, ReporterContext } from './review/reporters/types.js';
 import type { ReviewReport } from './review/types.js';
 import { detectRefType } from './git/ref.js';
-import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
+import {
+  loadConfig,
+  loadLocalConfig,
+  saveConfig,
+  saveLocalConfig,
+  deleteConfigValue,
+  deleteLocalConfigValue,
+  getConfigLocation,
+  getLocalConfigLocation,
+  setLocalRepoPath,
+} from './config/store.js';
+import type { ArgusConfig } from './config/store.js';
 import type { PreviousReviewData } from './review/types.js';
 
 /**
@@ -252,22 +263,78 @@ Keys:
   light-model   Model for agent selection and custom agent matching
   dedup-model   Model for realtime issue deduplication
 
+Options:
+  --local              Save/read from repo-local config (<repoPath>/.argus/config.json)
+  --repo=<path>        Specify the repo path for --local (defaults to current directory)
+
 Examples:
   argus config set api-key sk-ant-api03-xxxxx
   argus config set base-url https://my-proxy.com/v1
   argus config set model claude-sonnet-4-5-20250929
   argus config set agent-model qwen3-coder-plus
-  argus config set light-model qwen3-coder-plus
-  argus config set dedup-model qwen3-coder-plus
+  argus config set --local model qwen3-coder-plus           # Save to repo-local config (cwd)
+  argus config set --local --repo=/path/to/repo model xxx   # Save to specific repo config
+  argus config list                                         # Show merged config
+  argus config list --local                                 # Show local config only
   argus config get api-key
-  argus config list
   argus config delete base-url
+  argus config delete --local model                         # Delete from local config
   argus config path
 
 Note:
-  Config is stored in ~/.argus/config.json
-  Environment variables take precedence over config file values.
+  Global config:  ~/.argus/config.json
+  Local config:   <repoPath>/.argus/config.json
+  Priority: environment variables > local config > global config
 `);
+}
+
+/**
+ * Parse --local and --repo=<path> flags from config command args.
+ * Returns the remaining positional args plus the parsed flags.
+ */
+function parseConfigFlags(args: string[]): {
+  positional: string[];
+  isLocal: boolean;
+  repoPath: string;
+} {
+  const positional: string[] = [];
+  let isLocal = false;
+  let repoPath = process.cwd();
+
+  for (const arg of args) {
+    if (arg === '--local') {
+      isLocal = true;
+    } else if (arg.startsWith('--repo=')) {
+      repoPath = arg.slice('--repo='.length);
+      isLocal = true; // --repo implies --local
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  return { positional, isLocal, repoPath };
+}
+
+/**
+ * Print a config object in a human-friendly format.
+ */
+function printConfigEntries(config: ArgusConfig, label: string, location: string): void {
+  console.log(`${label}:`);
+  console.log('=================================');
+
+  if (Object.keys(config).length === 0) {
+    console.log('(no configuration set)');
+  } else {
+    if (config.apiKey) console.log(`api-key:     ${maskApiKey(config.apiKey)}`);
+    if (config.baseUrl) console.log(`base-url:    ${config.baseUrl}`);
+    if (config.model) console.log(`model:       ${config.model}`);
+    if (config.agentModel) console.log(`agent-model: ${config.agentModel}`);
+    if (config.lightModel) console.log(`light-model: ${config.lightModel}`);
+    if (config.dedupModel) console.log(`dedup-model: ${config.dedupModel}`);
+  }
+
+  console.log('=================================');
+  console.log(`Config file: ${location}`);
 }
 
 /**
@@ -299,10 +366,13 @@ function runConfigCommand(args: string[]): void {
     dedupmodel: 'dedupModel',
   };
 
+  // Parse flags from the remaining args (after subcommand)
+  const { positional, isLocal, repoPath } = parseConfigFlags(args.slice(1));
+
   switch (subcommand) {
     case 'set': {
-      const key = args[1]?.toLowerCase();
-      const value = args[2];
+      const key = positional[0]?.toLowerCase();
+      const value = positional[1];
 
       if (!key || !value) {
         console.error('Error: config set requires <key> and <value>\n');
@@ -319,16 +389,21 @@ function runConfigCommand(args: string[]): void {
         process.exit(1);
       }
 
-      saveConfig({ [configKey]: value });
+      if (isLocal) {
+        saveLocalConfig({ [configKey]: value }, repoPath);
+      } else {
+        saveConfig({ [configKey]: value });
+      }
 
       // Mask API key in output
       const displayValue = configKey === 'apiKey' ? maskApiKey(value) : value;
-      console.log(`Set ${key} = ${displayValue}`);
+      const scope = isLocal ? ' (local)' : '';
+      console.log(`Set ${key} = ${displayValue}${scope}`);
       break;
     }
 
     case 'get': {
-      const key = args[1]?.toLowerCase();
+      const key = positional[0]?.toLowerCase();
 
       if (!key) {
         console.error('Error: config get requires <key>\n');
@@ -345,7 +420,7 @@ function runConfigCommand(args: string[]): void {
         process.exit(1);
       }
 
-      const config = loadConfig();
+      const config = isLocal ? loadLocalConfig(repoPath) : loadConfig();
       const value = config[configKey];
 
       if (value) {
@@ -359,41 +434,30 @@ function runConfigCommand(args: string[]): void {
     }
 
     case 'list': {
-      const config = loadConfig();
-
-      console.log('Current configuration:');
-      console.log('=================================');
-
-      if (Object.keys(config).length === 0) {
-        console.log('(no configuration set)');
+      if (isLocal) {
+        const localConfig = loadLocalConfig(repoPath);
+        const localLocation = getLocalConfigLocation(repoPath) ?? `${repoPath}/.argus/config.json`;
+        printConfigEntries(localConfig, 'Local configuration', localLocation);
       } else {
-        if (config.apiKey) {
-          console.log(`api-key:   ${maskApiKey(config.apiKey)}`);
-        }
-        if (config.baseUrl) {
-          console.log(`base-url:  ${config.baseUrl}`);
-        }
-        if (config.model) {
-          console.log(`model:     ${config.model}`);
-        }
-        if (config.agentModel) {
-          console.log(`agent-model: ${config.agentModel}`);
-        }
-        if (config.lightModel) {
-          console.log(`light-model: ${config.lightModel}`);
-        }
-        if (config.dedupModel) {
-          console.log(`dedup-model: ${config.dedupModel}`);
+        // Show merged config (global + local if repo path is set)
+        const config = loadConfig();
+        printConfigEntries(config, 'Current configuration (merged)', getConfigLocation());
+
+        // Also show local config info if it exists
+        const localLocation = getLocalConfigLocation();
+        if (localLocation) {
+          const localConfig = loadLocalConfig();
+          if (Object.keys(localConfig).length > 0) {
+            console.log('');
+            printConfigEntries(localConfig, 'Local overrides', localLocation);
+          }
         }
       }
-
-      console.log('=================================');
-      console.log(`Config file: ${getConfigLocation()}`);
       break;
     }
 
     case 'delete': {
-      const key = args[1]?.toLowerCase();
+      const key = positional[0]?.toLowerCase();
 
       if (!key) {
         console.error('Error: config delete requires <key>\n');
@@ -410,13 +474,22 @@ function runConfigCommand(args: string[]): void {
         process.exit(1);
       }
 
-      deleteConfigValue(configKey);
-      console.log(`Deleted ${key}`);
+      if (isLocal) {
+        deleteLocalConfigValue(configKey, repoPath);
+      } else {
+        deleteConfigValue(configKey);
+      }
+      const scope = isLocal ? ' (local)' : '';
+      console.log(`Deleted ${key}${scope}`);
       break;
     }
 
     case 'path': {
-      console.log(getConfigLocation());
+      console.log(`Global: ${getConfigLocation()}`);
+      const localLocation = isLocal ? getLocalConfigLocation(repoPath) : getLocalConfigLocation();
+      if (localLocation) {
+        console.log(`Local:  ${localLocation}`);
+      }
       break;
     }
 
@@ -660,6 +733,9 @@ async function runReviewCommand(
   targetRef: string | undefined,
   options: ReturnType<typeof parseOptions>
 ): Promise<void> {
+  // Set local repo path so loadConfig() merges repo-local config
+  setLocalRepoPath(repoPath);
+
   // Determine review mode based on inputs
   const hasExternalDiff =
     options.externalDiff.diffFile || options.externalDiff.diffStdin || options.externalDiff.commits;

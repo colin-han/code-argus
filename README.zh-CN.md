@@ -60,7 +60,7 @@ argus config set api-key sk-ant-xxx
 ### 配置管理
 
 ```bash
-# 设置配置
+# 设置全局配置（保存到 ~/.argus/config.json）
 argus config set api-key sk-ant-xxx      # API 密钥
 argus config set base-url https://proxy  # 自定义代理 URL
 argus config set model qwen3-coder-plus         # 所有阶段的共享兜底模型
@@ -68,20 +68,31 @@ argus config set agent-model qwen3-coder-plus   # 审查 Agent / 验证器模型
 argus config set light-model qwen3-coder-plus   # 选择器 / 匹配器模型
 argus config set dedup-model qwen3-coder-plus   # 实时去重模型
 
+# 设置本地配置（保存到 <repoPath>/.argus/config.json）
+argus config set --local model qwen3-coder-plus           # 当前目录的 repo 本地配置
+argus config set --local --repo=/path/to/repo model xxx   # 指定 repo 路径
+
 # 查看配置
-argus config list                         # 列出所有配置
+argus config list                         # 列出合并后的配置
+argus config list --local                 # 仅列出本地配置
 argus config get api-key                  # 获取单个配置
 argus config path                         # 显示配置文件路径
 
 # 删除配置
 argus config delete base-url
+argus config delete --local model         # 删除本地配置中的值
 ```
+
+配置优先级（从高到低）：
+
+1. 环境变量（`ANTHROPIC_API_KEY` 等）
+2. 本地配置（`<repoPath>/.argus/config.json`）
+3. 全局配置（`~/.argus/config.json`）
 
 模型配置优先级：
 
 - `agent-model` / `light-model` / `dedup-model` 会覆盖共享的 `model`
 - 共享 `model` 作为所有审查阶段的兜底值
-- 环境变量仍然优先于配置文件
 
 ## 使用方法
 

@@ -60,7 +60,7 @@ argus config set api-key sk-ant-xxx
 ### Configuration Management
 
 ```bash
-# Set configuration
+# Set global configuration (saved to ~/.argus/config.json)
 argus config set api-key sk-ant-xxx      # API key
 argus config set base-url https://proxy  # Custom proxy URL
 argus config set model qwen3-coder-plus         # Shared fallback model
@@ -68,20 +68,31 @@ argus config set agent-model qwen3-coder-plus   # Reviewer/validator model
 argus config set light-model qwen3-coder-plus   # Selector/matcher model
 argus config set dedup-model qwen3-coder-plus   # Realtime dedup model
 
+# Set local configuration (saved to <repoPath>/.argus/config.json)
+argus config set --local model qwen3-coder-plus           # Repo-local config (cwd)
+argus config set --local --repo=/path/to/repo model xxx   # Specify repo path
+
 # View configuration
-argus config list                         # List all config
+argus config list                         # List merged config
+argus config list --local                 # List local config only
 argus config get api-key                  # Get single config
-argus config path                         # Show config file path
+argus config path                         # Show config file paths
 
 # Delete configuration
 argus config delete base-url
+argus config delete --local model         # Delete from local config
 ```
+
+Config priority (highest to lowest):
+
+1. Environment variables (`ANTHROPIC_API_KEY`, etc.)
+2. Local config (`<repoPath>/.argus/config.json`)
+3. Global config (`~/.argus/config.json`)
 
 Model config priority:
 
 - `agent-model` / `light-model` / `dedup-model` override the shared `model`
 - shared `model` is the fallback for all review stages
-- environment variables still take precedence over config file values
 
 ## Usage
 
