@@ -23,6 +23,7 @@ export default [
         __filename: 'readonly',
         NodeJS: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         fetch: 'readonly',

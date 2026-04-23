@@ -13,6 +13,28 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 /**
+ * JIRA integration configuration
+ */
+export interface JiraConfig {
+  /** JIRA server base URL (e.g. https://org.atlassian.net) */
+  baseUrl?: string;
+  /** JIRA username / email */
+  username?: string;
+  /** JIRA API token */
+  apiToken?: string;
+  /** JIRA project key (e.g. PROJ) */
+  projectKey?: string;
+  /** Issue type to create (default: Bug) */
+  issueType?: string;
+  /** Minimum severity to report (default: warning) */
+  minSeverity?: string;
+  /** Labels to add (comma-separated) */
+  labels?: string;
+  /** Dry-run mode */
+  dryRun?: boolean;
+}
+
+/**
  * Configuration structure
  */
 export interface ArgusConfig {
@@ -28,6 +50,10 @@ export interface ArgusConfig {
   lightModel?: string;
   /** Realtime deduplication model */
   dedupModel?: string;
+  /** Maximum concurrent agent API calls (default: 2) */
+  maxConcurrency?: number;
+  /** JIRA integration configuration */
+  jira?: JiraConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,11 +169,19 @@ export function loadLocalConfig(repoPath?: string): ArgusConfig {
 /**
  * Load merged configuration (global + local overlay).
  * Local values override global values for the same key.
+ * Nested objects (e.g. jira) are shallow-merged individually.
  */
 export function loadConfig(): ArgusConfig {
   const global = loadGlobalConfig();
   const local = loadLocalConfig();
-  return { ...global, ...local };
+  const merged = { ...global, ...local };
+
+  // Deep-merge nested objects
+  if (global.jira || local.jira) {
+    merged.jira = { ...global.jira, ...local.jira };
+  }
+
+  return merged;
 }
 
 /**
@@ -160,6 +194,11 @@ export function saveConfig(config: ArgusConfig): void {
   // Merge with existing global config
   const existing = loadGlobalConfig();
   const merged = { ...existing, ...config };
+
+  // Deep-merge nested objects
+  if (config.jira) {
+    merged.jira = { ...existing.jira, ...config.jira };
+  }
 
   // Remove undefined values
   const cleaned = Object.fromEntries(Object.entries(merged).filter(([, v]) => v !== undefined));
@@ -183,6 +222,11 @@ export function saveLocalConfig(config: ArgusConfig, repoPath?: string): void {
   // Merge with existing local config
   const existing = loadLocalConfig(rp);
   const merged = { ...existing, ...config };
+
+  // Deep-merge nested objects
+  if (config.jira) {
+    merged.jira = { ...existing.jira, ...config.jira };
+  }
 
   // Remove undefined values
   const cleaned = Object.fromEntries(Object.entries(merged).filter(([, v]) => v !== undefined));

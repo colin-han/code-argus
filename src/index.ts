@@ -53,6 +53,7 @@ import type { ReviewReport } from './review/types.js';
 import { detectRefType } from './git/ref.js';
 import {
   loadConfig,
+  loadGlobalConfig,
   loadLocalConfig,
   saveConfig,
   saveLocalConfig,
@@ -62,7 +63,7 @@ import {
   getLocalConfigLocation,
   setLocalRepoPath,
 } from './config/store.js';
-import type { ArgusConfig } from './config/store.js';
+import type { ArgusConfig, JiraConfig } from './config/store.js';
 import type { PreviousReviewData } from './review/types.js';
 
 /**
@@ -256,12 +257,21 @@ Subcommands:
   path                 Show config file location
 
 Keys:
-  api-key       Anthropic API key
-  base-url      Custom API base URL (for proxies)
-  model         Shared fallback model for all review stages
-  agent-model   Model for reviewer agents / validator / fix verifier
-  light-model   Model for agent selection and custom agent matching
-  dedup-model   Model for realtime issue deduplication
+  api-key            Anthropic API key
+  base-url           Custom API base URL (for proxies)
+  model              Shared fallback model for all review stages
+  agent-model        Model for reviewer agents / validator / fix verifier
+  light-model        Model for agent selection and custom agent matching
+  dedup-model        Model for realtime issue deduplication
+  max-concurrency    Max concurrent agent API calls (default: 2)
+  jira.base-url      JIRA server URL (e.g. https://org.atlassian.net)
+  jira.username      JIRA username / email
+  jira.api-token     JIRA API token
+  jira.project-key   JIRA project key (e.g. PROJ)
+  jira.issue-type    Issue type to create (default: Bug)
+  jira.min-severity  Minimum severity to report (default: warning)
+  jira.labels        Labels (comma-separated)
+  jira.dry-run       Dry-run mode (true/false)
 
 Options:
   --local              Save/read from repo-local config (<repoPath>/.argus/config.json)
@@ -322,19 +332,132 @@ function printConfigEntries(config: ArgusConfig, label: string, location: string
   console.log(`${label}:`);
   console.log('=================================');
 
-  if (Object.keys(config).length === 0) {
+  const hasJira = config.jira && Object.keys(config.jira).length > 0;
+  const hasTopLevel =
+    config.apiKey ||
+    config.baseUrl ||
+    config.model ||
+    config.agentModel ||
+    config.lightModel ||
+    config.dedupModel ||
+    config.maxConcurrency !== undefined;
+
+  if (!hasTopLevel && !hasJira) {
     console.log('(no configuration set)');
   } else {
-    if (config.apiKey) console.log(`api-key:     ${maskApiKey(config.apiKey)}`);
-    if (config.baseUrl) console.log(`base-url:    ${config.baseUrl}`);
-    if (config.model) console.log(`model:       ${config.model}`);
-    if (config.agentModel) console.log(`agent-model: ${config.agentModel}`);
-    if (config.lightModel) console.log(`light-model: ${config.lightModel}`);
-    if (config.dedupModel) console.log(`dedup-model: ${config.dedupModel}`);
+    if (config.apiKey) console.log(`api-key:           ${maskApiKey(config.apiKey)}`);
+    if (config.baseUrl) console.log(`base-url:          ${config.baseUrl}`);
+    if (config.model) console.log(`model:             ${config.model}`);
+    if (config.agentModel) console.log(`agent-model:       ${config.agentModel}`);
+    if (config.lightModel) console.log(`light-model:       ${config.lightModel}`);
+    if (config.dedupModel) console.log(`dedup-model:       ${config.dedupModel}`);
+    if (config.maxConcurrency !== undefined)
+      console.log(`max-concurrency:   ${config.maxConcurrency}`);
+    if (hasJira) {
+      const j = config.jira!;
+      if (j.baseUrl) console.log(`jira.base-url:     ${j.baseUrl}`);
+      if (j.username) console.log(`jira.username:     ${j.username}`);
+      if (j.apiToken) console.log(`jira.api-token:    ${maskApiKey(j.apiToken)}`);
+      if (j.projectKey) console.log(`jira.project-key:  ${j.projectKey}`);
+      if (j.issueType) console.log(`jira.issue-type:   ${j.issueType}`);
+      if (j.minSeverity) console.log(`jira.min-severity: ${j.minSeverity}`);
+      if (j.labels) console.log(`jira.labels:       ${j.labels}`);
+      if (j.dryRun !== undefined) console.log(`jira.dry-run:      ${j.dryRun}`);
+    }
   }
 
   console.log('=================================');
   console.log(`Config file: ${location}`);
+}
+
+// Map CLI key names to top-level config keys
+const TOP_LEVEL_KEY_MAP: Record<string, keyof ArgusConfig> = {
+  'api-key': 'apiKey',
+  apikey: 'apiKey',
+  'base-url': 'baseUrl',
+  baseurl: 'baseUrl',
+  model: 'model',
+  'agent-model': 'agentModel',
+  agentmodel: 'agentModel',
+  'light-model': 'lightModel',
+  lightmodel: 'lightModel',
+  'dedup-model': 'dedupModel',
+  dedupmodel: 'dedupModel',
+  'max-concurrency': 'maxConcurrency',
+  maxconcurrency: 'maxConcurrency',
+};
+
+// Map CLI key names to jira config keys
+const JIRA_KEY_MAP: Record<string, keyof JiraConfig> = {
+  'jira.base-url': 'baseUrl',
+  'jira.baseurl': 'baseUrl',
+  'jira.username': 'username',
+  'jira.api-token': 'apiToken',
+  'jira.apitoken': 'apiToken',
+  'jira.project-key': 'projectKey',
+  'jira.projectkey': 'projectKey',
+  'jira.issue-type': 'issueType',
+  'jira.issuetype': 'issueType',
+  'jira.min-severity': 'minSeverity',
+  'jira.minseverity': 'minSeverity',
+  'jira.labels': 'labels',
+  'jira.dry-run': 'dryRun',
+  'jira.dryrun': 'dryRun',
+};
+
+const ALL_VALID_KEYS =
+  'api-key, base-url, model, agent-model, light-model, dedup-model, max-concurrency, ' +
+  'jira.base-url, jira.username, jira.api-token, jira.project-key, ' +
+  'jira.issue-type, jira.min-severity, jira.labels, jira.dry-run';
+
+/**
+ * Resolve a CLI key to either a top-level or jira config mutation.
+ * Returns { config } ready to pass to saveConfig/saveLocalConfig,
+ * or undefined if the key is unknown.
+ */
+function resolveConfigKey(key: string): { topKey?: keyof ArgusConfig; jiraKey?: keyof JiraConfig } {
+  const topKey = TOP_LEVEL_KEY_MAP[key];
+  if (topKey) return { topKey };
+  const jiraKey = JIRA_KEY_MAP[key];
+  if (jiraKey) return { jiraKey };
+  return {};
+}
+
+/**
+ * Read a single config value by CLI key name.
+ */
+function readConfigValue(config: ArgusConfig, key: string): string | number | boolean | undefined {
+  const { topKey, jiraKey } = resolveConfigKey(key);
+  if (topKey) return config[topKey] as string | number | undefined;
+  if (jiraKey) return config.jira?.[jiraKey] as string | boolean | undefined;
+  return undefined;
+}
+
+/**
+ * Build an ArgusConfig patch for a set operation.
+ */
+function buildConfigPatch(key: string, rawValue: string): ArgusConfig | undefined {
+  const { topKey, jiraKey } = resolveConfigKey(key);
+  if (topKey) {
+    // Parse numeric values
+    if (topKey === 'maxConcurrency') {
+      const n = Number.parseInt(rawValue, 10);
+      if (!Number.isFinite(n) || n < 1) {
+        throw new Error(`max-concurrency must be a positive integer, got: ${rawValue}`);
+      }
+      return { maxConcurrency: n };
+    }
+    return { [topKey]: rawValue } as ArgusConfig;
+  }
+  if (jiraKey) {
+    // Parse boolean values for dryRun
+    let parsed: string | boolean = rawValue;
+    if (jiraKey === 'dryRun') {
+      parsed = rawValue === 'true';
+    }
+    return { jira: { [jiraKey]: parsed } as JiraConfig };
+  }
+  return undefined;
 }
 
 /**
@@ -347,24 +470,6 @@ function runConfigCommand(args: string[]): void {
     printConfigUsage();
     return;
   }
-
-  // Map CLI key names to config keys
-  const keyMap: Record<
-    string,
-    'apiKey' | 'baseUrl' | 'model' | 'agentModel' | 'lightModel' | 'dedupModel'
-  > = {
-    'api-key': 'apiKey',
-    apikey: 'apiKey',
-    'base-url': 'baseUrl',
-    baseurl: 'baseUrl',
-    model: 'model',
-    'agent-model': 'agentModel',
-    agentmodel: 'agentModel',
-    'light-model': 'lightModel',
-    lightmodel: 'lightModel',
-    'dedup-model': 'dedupModel',
-    dedupmodel: 'dedupModel',
-  };
 
   // Parse flags from the remaining args (after subcommand)
   const { positional, isLocal, repoPath } = parseConfigFlags(args.slice(1));
@@ -380,23 +485,22 @@ function runConfigCommand(args: string[]): void {
         process.exit(1);
       }
 
-      const configKey = keyMap[key];
-      if (!configKey) {
+      const patch = buildConfigPatch(key, value);
+      if (!patch) {
         console.error(`Error: Unknown config key "${key}"`);
-        console.error(
-          'Valid keys: api-key, base-url, model, agent-model, light-model, dedup-model'
-        );
+        console.error(`Valid keys: ${ALL_VALID_KEYS}`);
         process.exit(1);
       }
 
       if (isLocal) {
-        saveLocalConfig({ [configKey]: value }, repoPath);
+        saveLocalConfig(patch, repoPath);
       } else {
-        saveConfig({ [configKey]: value });
+        saveConfig(patch);
       }
 
-      // Mask API key in output
-      const displayValue = configKey === 'apiKey' ? maskApiKey(value) : value;
+      // Mask sensitive values in output
+      const isSensitive = key === 'api-key' || key === 'jira.api-token';
+      const displayValue = isSensitive ? maskApiKey(value) : value;
       const scope = isLocal ? ' (local)' : '';
       console.log(`Set ${key} = ${displayValue}${scope}`);
       break;
@@ -411,21 +515,25 @@ function runConfigCommand(args: string[]): void {
         process.exit(1);
       }
 
-      const configKey = keyMap[key];
-      if (!configKey) {
+      const { topKey, jiraKey } = resolveConfigKey(key);
+      if (!topKey && !jiraKey) {
         console.error(`Error: Unknown config key "${key}"`);
-        console.error(
-          'Valid keys: api-key, base-url, model, agent-model, light-model, dedup-model'
-        );
+        console.error(`Valid keys: ${ALL_VALID_KEYS}`);
         process.exit(1);
       }
 
-      const config = isLocal ? loadLocalConfig(repoPath) : loadConfig();
-      const value = config[configKey];
+      let config: ArgusConfig;
+      if (isLocal) {
+        config = loadLocalConfig(repoPath);
+      } else {
+        setLocalRepoPath(repoPath);
+        config = loadConfig();
+      }
+      const value = readConfigValue(config, key);
 
-      if (value) {
-        // Mask API key in output
-        const displayValue = configKey === 'apiKey' ? maskApiKey(value) : value;
+      if (value !== undefined && value !== '') {
+        const isSensitive = key === 'api-key' || key === 'jira.api-token';
+        const displayValue = isSensitive ? maskApiKey(String(value)) : String(value);
         console.log(displayValue);
       } else {
         console.log(`(not set)`);
@@ -436,22 +544,19 @@ function runConfigCommand(args: string[]): void {
     case 'list': {
       if (isLocal) {
         const localConfig = loadLocalConfig(repoPath);
-        const localLocation = getLocalConfigLocation(repoPath) ?? `${repoPath}/.argus/config.json`;
-        printConfigEntries(localConfig, 'Local configuration', localLocation);
+        const localLoc = getLocalConfigLocation(repoPath) ?? `${repoPath}/.argus/config.json`;
+        printConfigEntries(localConfig, 'Local configuration', localLoc);
       } else {
-        // Show merged config (global + local if repo path is set)
+        // Ensure local repo path is set so loadConfig() merges both layers
+        setLocalRepoPath(repoPath);
         const config = loadConfig();
-        printConfigEntries(config, 'Current configuration (merged)', getConfigLocation());
+        const globalLoc = getConfigLocation();
+        const localLoc = getLocalConfigLocation(repoPath);
 
-        // Also show local config info if it exists
-        const localLocation = getLocalConfigLocation();
-        if (localLocation) {
-          const localConfig = loadLocalConfig();
-          if (Object.keys(localConfig).length > 0) {
-            console.log('');
-            printConfigEntries(localConfig, 'Local overrides', localLocation);
-          }
-        }
+        // Build location display
+        let locDisplay = globalLoc;
+        if (localLoc) locDisplay += `\nLocal file:  ${localLoc}`;
+        printConfigEntries(config, 'Current configuration (merged)', locDisplay);
       }
       break;
     }
@@ -465,19 +570,34 @@ function runConfigCommand(args: string[]): void {
         process.exit(1);
       }
 
-      const configKey = keyMap[key];
-      if (!configKey) {
+      const { topKey, jiraKey } = resolveConfigKey(key);
+      if (!topKey && !jiraKey) {
         console.error(`Error: Unknown config key "${key}"`);
-        console.error(
-          'Valid keys: api-key, base-url, model, agent-model, light-model, dedup-model'
-        );
+        console.error(`Valid keys: ${ALL_VALID_KEYS}`);
         process.exit(1);
       }
 
-      if (isLocal) {
-        deleteLocalConfigValue(configKey, repoPath);
-      } else {
-        deleteConfigValue(configKey);
+      if (topKey) {
+        if (isLocal) {
+          deleteLocalConfigValue(topKey, repoPath);
+        } else {
+          deleteConfigValue(topKey);
+        }
+      } else if (jiraKey) {
+        // Delete a single jira sub-key from the target config layer
+        if (isLocal) {
+          const lc = loadLocalConfig(repoPath);
+          if (lc.jira) {
+            delete lc.jira[jiraKey];
+            saveLocalConfig({ jira: lc.jira }, repoPath);
+          }
+        } else {
+          const gc = loadGlobalConfig();
+          if (gc.jira) {
+            delete gc.jira[jiraKey];
+            saveConfig({ jira: gc.jira });
+          }
+        }
       }
       const scope = isLocal ? ' (local)' : '';
       console.log(`Deleted ${key}${scope}`);
@@ -571,76 +691,109 @@ function parseOptions(args: string[]): {
     reporterDirs: [],
   };
 
-  for (const arg of args) {
-    if (arg.startsWith('--language=')) {
-      const language = arg.split('=')[1];
-      if (language === 'en' || language === 'zh') {
-        options.language = language;
+  /**
+   * 读取 `--flag=value` 或 `--flag value` 形式的值。
+   * 对于空格形式，消费下一个参数（索引自增）。
+   * 返回 undefined 表示没有有效值（下一个是另一个 flag 或到末尾）。
+   */
+  const readValue = (name: string, index: number): { value: string | undefined; next: number } => {
+    const arg = args[index]!;
+    const prefix = `${name}=`;
+    if (arg.startsWith(prefix)) {
+      const v = arg.substring(prefix.length);
+      return { value: v.length > 0 ? v : undefined, next: index };
+    }
+    if (arg === name) {
+      const nextArg = args[index + 1];
+      // 下一个参数存在且不像 flag（不以 -- 开头）则当作值
+      if (nextArg !== undefined && !nextArg.startsWith('--')) {
+        return { value: nextArg, next: index + 1 };
       }
-    } else if (arg.startsWith('--config-dir=')) {
-      const dir = arg.split('=')[1];
-      if (dir) {
-        options.configDirs.push(dir);
+      return { value: undefined, next: index };
+    }
+    return { value: undefined, next: index };
+  };
+
+  const matchesFlag = (name: string, arg: string): boolean =>
+    arg === name || arg.startsWith(`${name}=`);
+
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i]!;
+
+    if (matchesFlag('--language', arg)) {
+      const { value, next } = readValue('--language', i);
+      if (value === 'en' || value === 'zh') {
+        options.language = value;
       }
-    } else if (arg.startsWith('--rules-dir=')) {
-      const dir = arg.split('=')[1];
-      if (dir) {
-        options.rulesDirs.push(dir);
-      }
-    } else if (arg.startsWith('--agents-dir=')) {
-      const dir = arg.split('=')[1];
-      if (dir) {
-        options.customAgentsDirs.push(dir);
-      }
+      i = next + 1;
+    } else if (matchesFlag('--config-dir', arg)) {
+      const { value, next } = readValue('--config-dir', i);
+      if (value) options.configDirs.push(value);
+      i = next + 1;
+    } else if (matchesFlag('--rules-dir', arg)) {
+      const { value, next } = readValue('--rules-dir', i);
+      if (value) options.rulesDirs.push(value);
+      i = next + 1;
+    } else if (matchesFlag('--agents-dir', arg)) {
+      const { value, next } = readValue('--agents-dir', i);
+      if (value) options.customAgentsDirs.push(value);
+      i = next + 1;
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
+      i++;
     } else if (arg === '--json-logs') {
       options.jsonLogs = true;
+      i++;
     } else if (arg === '--verbose') {
       options.verbose = true;
-    } else if (arg.startsWith('--previous-review=')) {
-      const filePath = arg.split('=')[1];
-      if (filePath) {
-        options.previousReview = filePath;
-        // Auto-enable fix verification unless explicitly disabled
+      i++;
+    } else if (matchesFlag('--previous-review', arg)) {
+      const { value, next } = readValue('--previous-review', i);
+      if (value) {
+        options.previousReview = value;
         if (options.verifyFixes === undefined) {
           options.verifyFixes = true;
         }
       }
+      i = next + 1;
     } else if (arg === '--no-verify-fixes') {
       options.verifyFixes = false;
+      i++;
     } else if (arg === '--verify-fixes') {
       options.verifyFixes = true;
-    } else if (arg.startsWith('--diff-file=')) {
-      const filePath = arg.split('=')[1];
-      if (filePath) {
-        options.externalDiff.diffFile = filePath;
-      }
+      i++;
+    } else if (matchesFlag('--diff-file', arg)) {
+      const { value, next } = readValue('--diff-file', i);
+      if (value) options.externalDiff.diffFile = value;
+      i = next + 1;
     } else if (arg === '--diff-stdin') {
       options.externalDiff.diffStdin = true;
-    } else if (arg.startsWith('--commits=')) {
-      const commits = arg.split('=')[1];
-      if (commits) {
-        options.externalDiff.commits = commits.split(',').map((c) => c.trim());
-      }
+      i++;
+    } else if (matchesFlag('--commits', arg)) {
+      const { value, next } = readValue('--commits', i);
+      if (value) options.externalDiff.commits = value.split(',').map((c) => c.trim());
+      i = next + 1;
     } else if (arg === '--no-smart-merge-filter') {
       options.externalDiff.disableSmartMergeFilter = true;
+      i++;
     } else if (arg === '--require-worktree') {
       options.requireWorktree = true;
-    } else if (arg.startsWith('--reporters=')) {
-      const val = arg.split('=')[1];
-      if (val) {
-        options.reporters = val.split(',').map((r) => r.trim());
-      }
-    } else if (arg.startsWith('--format=')) {
+      i++;
+    } else if (matchesFlag('--reporters', arg)) {
+      const { value, next } = readValue('--reporters', i);
+      if (value) options.reporters = value.split(',').map((r) => r.trim());
+      i = next + 1;
+    } else if (matchesFlag('--format', arg)) {
       // Backward compatibility: --format=X maps to --reporters=X
-      const val = arg.split('=')[1];
-      if (val && options.reporters.length === 0) {
-        options.reporters = [val.trim()];
+      const { value, next } = readValue('--format', i);
+      if (value && options.reporters.length === 0) {
+        options.reporters = [value.trim()];
       }
-    } else if (arg.startsWith('--reporter-opt=')) {
-      // Format: --reporter-opt=pluginName.key=value
-      const val = arg.split('=').slice(1).join('=');
+      i = next + 1;
+    } else if (matchesFlag('--reporter-opt', arg)) {
+      // Format: --reporter-opt=pluginName.key=value or --reporter-opt pluginName.key=value
+      const { value: val, next } = readValue('--reporter-opt', i);
       if (val) {
         const dotIndex = val.indexOf('.');
         if (dotIndex > 0) {
@@ -653,7 +806,6 @@ function parseOptions(args: string[]): {
             if (!options.reporterOpts[pluginName]) {
               options.reporterOpts[pluginName] = {};
             }
-            // Parse boolean and number values
             if (value === 'true') {
               options.reporterOpts[pluginName]![key] = true;
             } else if (value === 'false') {
@@ -666,11 +818,14 @@ function parseOptions(args: string[]): {
           }
         }
       }
-    } else if (arg.startsWith('--reporter-dir=')) {
-      const dir = arg.split('=')[1];
-      if (dir) {
-        options.reporterDirs.push(dir);
-      }
+      i = next + 1;
+    } else if (matchesFlag('--reporter-dir', arg)) {
+      const { value, next } = readValue('--reporter-dir', i);
+      if (value) options.reporterDirs.push(value);
+      i = next + 1;
+    } else {
+      // 未知参数，跳过
+      i++;
     }
   }
 
@@ -826,6 +981,9 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       }
     : undefined;
 
+  // Load merged config (global + local) for review settings
+  const fileConfig = loadConfig();
+
   // Use the new reviewByRefs API which auto-detects ref types
   const report = await reviewByRefs({
     repoPath,
@@ -845,6 +1003,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       // Worktree requirement
       requireWorktree: options.requireWorktree,
       abortController: globalAbortController,
+      // Max concurrent agent API calls (from config, defaults applied downstream)
+      maxConcurrency: fileConfig.maxConcurrency,
     },
   });
 
@@ -889,11 +1049,21 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       verbose: options.verbose,
     };
 
+    // Merge JIRA config from config file into reporterOpts (CLI opts take precedence)
+    const mergedReporterOpts = { ...options.reporterOpts };
+    if (fileConfig.jira && Object.keys(fileConfig.jira).length > 0) {
+      const jiraFromFile: Record<string, string | boolean> = {};
+      for (const [k, v] of Object.entries(fileConfig.jira)) {
+        if (v !== undefined) jiraFromFile[k] = v;
+      }
+      mergedReporterOpts['jira'] = { ...jiraFromFile, ...mergedReporterOpts['jira'] };
+    }
+
     const { results, updatedReport } = await registry.executeAll(
       reporterNames,
       report,
       reporterContext,
-      options.reporterOpts
+      mergedReporterOpts
     );
 
     // Output formatter results to stdout
@@ -958,7 +1128,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
         updatedReport,
         prevReport,
         reporterContext,
-        options.reporterOpts
+        mergedReporterOpts
       );
 
       for (const result of syncResults) {

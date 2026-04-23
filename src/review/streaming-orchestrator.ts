@@ -56,6 +56,9 @@ import {
   getRecommendedMaxTurns,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY_MS,
+  MAX_RATE_LIMIT_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  RATE_LIMIT_RETRY_MAX_DELAY_MS,
 } from './constants.js';
 import { createProgressPrinterWithMode, type IProgressPrinter } from '../cli/index.js';
 import type { ReviewEvent, ReviewStateSnapshot, ReviewEventEmitter } from '../cli/events.js';
@@ -80,6 +83,46 @@ import { executeFixVerifier } from './fix-verifier.js';
 import type { FixVerificationSummary, PreviousReviewData } from './types.js';
 import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '../diff/index.js';
 import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
+import { runTasks, type SchedulerEvent } from '../task-scheduler/index.js';
+
+/**
+ * Agent 执行结果（runStreamingAgent 返回）
+ */
+type AgentRunResult = { tokensUsed: number; checklists: ChecklistItem[] };
+
+/**
+ * 单个 Agent 任务规格（传给 runAgentTasks）
+ */
+interface AgentTaskSpec {
+  agentType: AgentType;
+  context: ReviewContext;
+  mcpServerFactory: (agentType: AgentType) => ReturnType<typeof createSdkMcpServer>;
+  segmentLabel?: string;
+  /** 任意业务元数据（如 segmentIndex），便于调用方使用 */
+  meta?: Record<string, unknown>;
+}
+
+/**
+ * Agent 任务执行结果
+ */
+type AgentTaskOutcome =
+  | { spec: AgentTaskSpec; result: AgentRunResult; elapsed: number; success: true }
+  | { spec: AgentTaskSpec; error: unknown; elapsed: number; success: false };
+
+/**
+ * 本地 rate limit 检测（用于事件处理时判断错误类型）
+ * 使用与 task-scheduler 一致的逻辑
+ */
+function isRateLimitError(error: unknown): boolean {
+  if (!error) return false;
+  const err = error as { status?: number; statusCode?: number };
+  if (err.status === 429 || err.statusCode === 429) return true;
+  const response = (error as { response?: { status?: number; statusCode?: number } }).response;
+  if (response) {
+    if (response.status === 429 || response.statusCode === 429) return true;
+  }
+  return false;
+}
 
 /**
  * Default orchestrator options
@@ -96,7 +139,7 @@ const DEFAULT_OPTIONS: Required<
   requireWorktree?: boolean;
   abortController?: AbortController;
 } = {
-  maxConcurrency: 4,
+  maxConcurrency: 2,
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
@@ -1773,79 +1816,31 @@ export class StreamingReviewOrchestrator {
       this.progress.agent(agentType, 'running');
     }
 
-    // Run all agents in parallel with timing
+    // Run agents using task-scheduler（全局并发控制 + 重试）
+    const concurrency = this.options.maxConcurrency ?? 2;
     if (this.options.verbose) {
-      console.log(`[StreamingOrchestrator] Running ${agentsToRun.length} agents in parallel...`);
+      console.log(
+        `[StreamingOrchestrator] Running ${agentsToRun.length} agents (concurrency: ${concurrency})...`
+      );
     }
 
-    const agentPromises = agentsToRun.map(async (agentType) => {
-      const startTime = Date.now();
-      let lastError: unknown = null;
+    const specs: AgentTaskSpec[] = agentsToRun.map((agentType) => ({
+      agentType,
+      context,
+      mcpServerFactory: mcpServer,
+    }));
 
-      // Retry loop for transient failures
-      for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
-        try {
-          const result = await this.runStreamingAgent(
-            agentType as AgentType,
-            context,
-            standardsText,
-            mcpServer,
-            reviewRepoPath,
-            dynamicMaxTurns
-          );
-          const elapsed = Date.now() - startTime;
-
-          // Log successful retry
-          if (attempt > 1) {
-            this.progress.info(`Agent ${agentType} 在第 ${attempt} 次尝试后成功`);
-          }
-
-          return { agentType, result, elapsed, success: true as const };
-        } catch (error) {
-          lastError = error;
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          const errorStack = error instanceof Error ? error.stack : undefined;
-
-          // Log error details (will be output as JSON in json-logs mode)
-          console.error(
-            `[StreamingOrchestrator] Agent ${agentType} error (attempt ${attempt}/${MAX_AGENT_RETRIES}):`,
-            { message: errorMsg, stack: errorStack }
-          );
-
-          if (attempt < MAX_AGENT_RETRIES) {
-            // Emit structured warning for retry
-            this.progress.warn(
-              `Agent ${agentType} 失败 (尝试 ${attempt}/${MAX_AGENT_RETRIES}): ${errorMsg}, 将在 ${AGENT_RETRY_DELAY_MS / 1000}s 后重试...`
-            );
-            this.progress.agent(
-              agentType,
-              'running',
-              `重试中 (${attempt + 1}/${MAX_AGENT_RETRIES})`
-            );
-            // Delay before retry with exponential backoff
-            await new Promise((resolve) =>
-              globalThis.setTimeout(resolve, AGENT_RETRY_DELAY_MS * attempt)
-            );
-          } else {
-            // Final failure - emit error
-            this.progress.error(
-              `Agent ${agentType} 在 ${MAX_AGENT_RETRIES} 次尝试后仍然失败: ${errorMsg}`
-            );
-          }
-        }
-      }
-
-      // All retries exhausted
-      const elapsed = Date.now() - startTime;
-      return { agentType, error: lastError, elapsed, success: false as const };
+    const outcomes = await this.runAgentTasks(specs, {
+      concurrency,
+      standardsText,
+      reviewRepoPath,
+      maxTurns: dynamicMaxTurns,
     });
-
-    const results = await Promise.all(agentPromises);
 
     // Collect results and check for failures
     const failedAgents: Array<{ agentType: string; error: unknown }> = [];
 
-    for (const res of results) {
+    for (const res of outcomes) {
       const elapsedStr =
         res.elapsed < 1000 ? `${res.elapsed}ms` : `${(res.elapsed / 1000).toFixed(1)}s`;
 
@@ -1853,17 +1848,19 @@ export class StreamingReviewOrchestrator {
         totalTokens += res.result.tokensUsed;
         allChecklists.push(...res.result.checklists);
 
-        this.progress.agent(res.agentType, 'completed', elapsedStr);
+        this.progress.agent(res.spec.agentType, 'completed', elapsedStr);
 
         if (this.options.verbose) {
-          console.log(`[StreamingOrchestrator] Agent ${res.agentType} completed in ${elapsedStr}`);
+          console.log(
+            `[StreamingOrchestrator] Agent ${res.spec.agentType} completed in ${elapsedStr}`
+          );
         }
       } else {
-        this.progress.agent(res.agentType, 'error', `failed, ${elapsedStr}`);
-        failedAgents.push({ agentType: res.agentType, error: res.error });
+        this.progress.agent(res.spec.agentType, 'error', `failed, ${elapsedStr}`);
+        failedAgents.push({ agentType: res.spec.agentType, error: res.error });
 
         if (this.options.verbose) {
-          console.error(`[StreamingOrchestrator] Agent ${res.agentType} failed:`, res.error);
+          console.error(`[StreamingOrchestrator] Agent ${res.spec.agentType} failed:`, res.error);
         }
       }
     }
@@ -2208,6 +2205,136 @@ Write all text (title, description, suggestion) in Chinese.`,
   }
 
   /**
+   * Batch-run agent tasks using the task-scheduler.
+   *
+   * Executes multiple (agent, segment) combinations with global concurrency control,
+   * retry logic (transient + rate limit), and progress reporting.
+   * Used by both non-segmented and segmented review flows.
+   */
+  private async runAgentTasks(
+    specs: AgentTaskSpec[],
+    options: {
+      concurrency: number;
+      standardsText: string;
+      reviewRepoPath: string;
+      maxTurns: number;
+    }
+  ): Promise<AgentTaskOutcome[]> {
+    const { concurrency, standardsText, reviewRepoPath, maxTurns } = options;
+
+    // 为每个任务维护当前的 rate limit 状态，供事件处理用
+    const rateLimitStateByIndex = new Map<number, boolean>();
+
+    const results = await runTasks<AgentRunResult>(
+      specs.map((spec) => async () => {
+        return this.runStreamingAgent(
+          spec.agentType,
+          spec.context,
+          standardsText,
+          spec.mcpServerFactory,
+          reviewRepoPath,
+          maxTurns
+        );
+      }),
+      {
+        concurrency,
+        retry: {
+          transient: {
+            maxRetries: MAX_AGENT_RETRIES,
+            baseDelayMs: AGENT_RETRY_DELAY_MS,
+            maxDelayMs: 60000,
+            backoffMultiplier: 2,
+          },
+          rateLimit: {
+            maxRetries: MAX_RATE_LIMIT_RETRIES,
+            baseDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+            maxDelayMs: RATE_LIMIT_RETRY_MAX_DELAY_MS,
+            backoffMultiplier: 2,
+            respectRetryAfter: true,
+          },
+        },
+        onEvent: (event) => {
+          this.handleAgentTaskEvent(event, specs, rateLimitStateByIndex);
+        },
+      }
+    );
+
+    // 转换结果格式
+    return results.map((result, i) => {
+      const spec = specs[i]!;
+      const label = spec.segmentLabel ? `[${spec.segmentLabel}] ${spec.agentType}` : spec.agentType;
+
+      if (result.success) {
+        return {
+          spec,
+          result: result.value!,
+          elapsed: result.elapsedMs,
+          success: true as const,
+        };
+      } else {
+        const errorMsg = result.error?.message ?? String(result.error);
+        this.progress.error(`Agent ${label} 在 ${result.attempts} 次尝试后仍然失败: ${errorMsg}`);
+        return {
+          spec,
+          error: result.error ?? new Error('Unknown error'),
+          elapsed: result.elapsedMs,
+          success: false as const,
+        };
+      }
+    });
+  }
+
+  /**
+   * 处理 task-scheduler 事件：日志输出、进度更新
+   */
+  private handleAgentTaskEvent(
+    event: SchedulerEvent,
+    specs: AgentTaskSpec[],
+    rateLimitStateByIndex: Map<number, boolean>
+  ): void {
+    const spec = specs[event.index];
+    if (!spec) return;
+
+    const label = spec.segmentLabel ? `[${spec.segmentLabel}] ${spec.agentType}` : spec.agentType;
+    const isRateLimit = event.error ? isRateLimitError(event.error) : false;
+
+    switch (event.type) {
+      case 'task-error': {
+        rateLimitStateByIndex.set(event.index, isRateLimit);
+        const errorKind = isRateLimit ? '速率限制 (429)' : '错误';
+        console.error(
+          `[StreamingOrchestrator] Agent ${label} ${errorKind} (attempt ${event.attempt}):`,
+          { message: event.error?.message, stack: event.error?.stack }
+        );
+        break;
+      }
+      case 'task-retry': {
+        const wasRateLimit = rateLimitStateByIndex.get(event.index) ?? false;
+        const errorKind = wasRateLimit ? '速率限制 (429)' : '错误';
+        if (event.retryDelayMs !== undefined) {
+          const delaySec = (event.retryDelayMs / 1000).toFixed(0);
+          this.progress.warn(
+            `Agent ${label} ${errorKind}, 等待 ${delaySec}s 后重试 (第 ${event.attempt + 1} 次尝试)...`
+          );
+          this.progress.agent(
+            spec.agentType,
+            'running',
+            `${spec.segmentLabel ?? ''} ${wasRateLimit ? '限流等待' : '重试中'} ${delaySec}s`.trim()
+          );
+        }
+        break;
+      }
+      case 'task-success': {
+        if (event.attempt > 1) {
+          this.progress.info(`Agent ${label} 在第 ${event.attempt} 次尝试后成功`);
+        }
+        rateLimitStateByIndex.delete(event.index);
+        break;
+      }
+    }
+  }
+
+  /**
    * Run segmented review for large PRs
    * Splits diff into manageable segments and reviews each in parallel
    */
@@ -2238,16 +2365,18 @@ Write all text (title, description, suggestion) in Chinese.`,
       );
     }
 
-    // Phase 2: Run agents for each segment in parallel
+    // Phase 2: Run agents for all segments with global task pool
     const totalSegments = segmentResult.segments.length;
-    this.progress.phase(2, 4, `运行 ${agentsToRun.length} 个 Agents × ${totalSegments} 分段...`);
+    const totalTasks = agentsToRun.length * totalSegments;
+    const concurrency = this.options.maxConcurrency ?? 2;
+    this.progress.phase(
+      2,
+      4,
+      `运行 ${totalTasks} 个任务 (${agentsToRun.length} Agents × ${totalSegments} 分段, 并发: ${concurrency})...`
+    );
 
-    // Create segment review promises
-    const segmentPromises = segmentResult.segments.map(async (segment, index) => {
-      const segmentLabel = `分段${index + 1}/${totalSegments}`;
-      this.progress.info(`[${segmentLabel}] 开始审核: ${segment.name}`);
-
-      // Create segment-specific context
+    // Pre-build segment contexts and MCP servers
+    const segmentData = segmentResult.segments.map((segment, index) => {
       const segmentDiff = rebuildDiffFromSegment(segment);
       const segmentContext: ReviewContext = {
         ...context,
@@ -2256,27 +2385,96 @@ Write all text (title, description, suggestion) in Chinese.`,
           diff: segmentDiff,
         },
         diffFiles: segment.files,
-        // Keep deletedFiles from original context for logic-reviewer
         deletedFiles: context.deletedFiles,
       };
 
-      // Run agents for this segment
-      try {
-        const result = await this.runAgentsWithStreaming(
-          segmentContext,
-          reviewRepoPath,
-          agentsToRun
-        );
-        this.progress.success(`[${segmentLabel}] 完成: ${segment.name}`);
-        return { segment, result, error: null };
-      } catch (error) {
-        this.progress.error(`[${segmentLabel}] 失败: ${segment.name} - ${error}`);
-        return { segment, result: null, error };
+      // Build filter maps for this segment
+      let changedLinesByFile: Map<string, Set<number>> | undefined;
+      let whitespaceOnlyLinesByFile: Map<string, Set<number>> | undefined;
+      if (segment.files.length > 0) {
+        changedLinesByFile = new Map();
+        whitespaceOnlyLinesByFile = new Map();
+        for (const file of segment.files) {
+          if (file.changedLines?.length)
+            changedLinesByFile.set(file.path, new Set(file.changedLines));
+          if (file.whitespaceOnlyLines?.length)
+            whitespaceOnlyLinesByFile.set(file.path, new Set(file.whitespaceOnlyLines));
+        }
       }
+
+      // Create MCP server factory for this segment
+      const mcpServer = this.createReportIssueMcpServer(
+        changedLinesByFile,
+        whitespaceOnlyLinesByFile
+      );
+
+      return {
+        segment,
+        index,
+        segmentLabel: `分段${index + 1}/${totalSegments}`,
+        segmentContext,
+        mcpServer,
+      };
     });
 
-    // Wait for all segments to complete
-    const segmentResults = await Promise.all(segmentPromises);
+    // Calculate dynamic maxTurns based on diff size
+    const fileCount = diffFiles.length;
+    const dynamicMaxTurns = getRecommendedMaxTurns(fileCount);
+
+    // Build standards text once
+    const standardsText = standardsToText(context.standards);
+
+    // Build flat task specs: all (segment, agent) combinations
+    const specs: AgentTaskSpec[] = [];
+    for (const sd of segmentData) {
+      for (const agentType of agentsToRun) {
+        specs.push({
+          agentType,
+          context: sd.segmentContext,
+          mcpServerFactory: sd.mcpServer,
+          segmentLabel: sd.segmentLabel,
+          meta: { segmentIndex: sd.index },
+        });
+      }
+    }
+
+    // Execute all tasks with global concurrency control + retry via task-scheduler
+    const taskOutcomes = await this.runAgentTasks(specs, {
+      concurrency,
+      standardsText,
+      reviewRepoPath,
+      maxTurns: dynamicMaxTurns,
+    });
+
+    // Group results by segment
+    const segmentResults: Array<{
+      segment: (typeof segmentResult.segments)[number];
+      result: { checklists: ChecklistItem[]; tokens: number } | null;
+      error: unknown;
+    }> = segmentData.map((sd) => ({ segment: sd.segment, result: null, error: null }));
+
+    for (const res of taskOutcomes) {
+      const segmentIndex = res.spec.meta?.segmentIndex as number;
+      const sr = segmentResults[segmentIndex]!;
+
+      if (res.success) {
+        if (!sr.result) sr.result = { checklists: [], tokens: 0 };
+        sr.result.tokens += res.result.tokensUsed;
+        sr.result.checklists.push(...res.result.checklists);
+      } else if (!sr.error) {
+        // Keep first error for the segment
+        sr.error = res.error;
+      }
+    }
+
+    // Log segment completion status
+    for (const sr of segmentResults) {
+      if (sr.error) {
+        this.progress.error(`[${sr.segment.name}] 失败: ${sr.error}`);
+      } else {
+        this.progress.success(`[${sr.segment.name}] 完成`);
+      }
+    }
 
     // Collect results from all segments
     let totalTokens = 0;

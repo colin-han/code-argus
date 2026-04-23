@@ -224,3 +224,22 @@ export const MAX_AGENT_RETRIES = 2;
  * 实际延迟 = BASE_DELAY * attempt（指数退避）
  */
 export const AGENT_RETRY_DELAY_MS = 2000;
+
+/**
+ * 遇到 API 速率限制（429）时的最大重试次数
+ * 比一般瞬态错误更多，因为限流可能持续较长时间
+ */
+export const MAX_RATE_LIMIT_RETRIES = 5;
+
+/**
+ * 速率限制重试的基础延迟（毫秒）
+ * 实际延迟 = BASE_DELAY * 2^(attempt-1)（指数退避）
+ * 序列: 30s, 60s, 120s, 240s, 480s
+ */
+export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
+
+/**
+ * 速率限制重试延迟上限（毫秒）
+ * 单次等待不超过此时长
+ */
+export const RATE_LIMIT_RETRY_MAX_DELAY_MS = 600_000; // 10 minutes

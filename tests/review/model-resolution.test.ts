@@ -22,9 +22,8 @@ describe('review model resolution', () => {
     mockGetLightModelConfig.mockReturnValue('light-model');
     mockGetDedupModelConfig.mockReturnValue('dedup-model');
 
-    const { getAgentModel, getLightModel, getRealtimeDedupModel } = await import(
-      '../../src/review/constants.js'
-    );
+    const { getAgentModel, getLightModel, getRealtimeDedupModel } =
+      await import('../../src/review/constants.js');
 
     expect(getAgentModel()).toBe('agent-model');
     expect(getLightModel()).toBe('light-model');
