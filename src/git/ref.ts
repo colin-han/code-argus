@@ -189,6 +189,35 @@ export function determineReviewMode(sourceRef: GitRef, targetRef: GitRef): Revie
 }
 
 /**
+ * Get the author email of the last commit on a reference
+ *
+ * @param repoPath - Path to the git repository
+ * @param ref - Reference (branch name or commit SHA)
+ * @param remote - Remote name (default: 'origin', only used for branches)
+ * @returns Author email address, or undefined if not found
+ */
+export function getLastCommitAuthor(
+  repoPath: string,
+  ref: string,
+  remote: string = 'origin'
+): string | undefined {
+  const absolutePath = resolve(repoPath);
+  const refArg = detectRefType(ref) === 'commit' ? ref : `${remote}/${ref}`;
+
+  try {
+    const email = execSync(`git log -1 --format=%ae ${refArg}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+
+    return email || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Get display string for a reference (for CLI output)
  *
  * @param ref - Git reference

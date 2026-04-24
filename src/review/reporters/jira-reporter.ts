@@ -199,6 +199,98 @@ async function addJiraComment(
   });
 }
 
+/**
+ * Search for a JIRA user by email address
+ * Returns the accountId (Cloud) or name (Server/DC) for assignment.
+ */
+async function searchJiraUser(
+  baseUrl: string,
+  username: string,
+  apiToken: string,
+  email: string
+): Promise<{ accountId?: string; name?: string; displayName: string } | null> {
+  const url = `${baseUrl.replace(/\/$/, '')}/rest/api/2/user/search?query=${encodeURIComponent(email)}`;
+  const auth = Buffer.from(`${username}:${apiToken}`).toString('base64');
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Basic ${auth}`,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) return null;
+
+  const users = (await response.json()) as Array<{
+    accountId?: string;
+    name?: string;
+    displayName: string;
+    emailAddress?: string;
+    active: boolean;
+  }>;
+
+  // Prefer exact email match among active users
+  const exactMatch = users.find(
+    (u) => u.active && u.emailAddress?.toLowerCase() === email.toLowerCase()
+  );
+  if (exactMatch) {
+    return {
+      accountId: exactMatch.accountId,
+      name: exactMatch.name,
+      displayName: exactMatch.displayName,
+    };
+  }
+
+  // Fall back to first active user
+  const firstActive = users.find((u) => u.active);
+  if (firstActive) {
+    return {
+      accountId: firstActive.accountId,
+      name: firstActive.name,
+      displayName: firstActive.displayName,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Assign a JIRA issue to a user
+ * Uses accountId for Cloud, name for Server/Data Center.
+ */
+async function assignJiraIssue(
+  baseUrl: string,
+  username: string,
+  apiToken: string,
+  issueKey: string,
+  assigneeId: string,
+  isCloud: boolean
+): Promise<boolean> {
+  const url = `${baseUrl.replace(/\/$/, '')}/rest/api/2/issue/${issueKey}/assignee`;
+  const auth = Buffer.from(`${username}:${apiToken}`).toString('base64');
+
+  const body = isCloud ? { accountId: assigneeId } : { name: assigneeId };
+
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  return response.ok;
+}
+
+/**
+ * Detect if a JIRA instance is Cloud (atlassian.net) or Server/DC
+ */
+function isJiraCloud(baseUrl: string): boolean {
+  return baseUrl.includes('atlassian.net');
+}
+
 export const jiraReporter: ReporterPlugin = {
   name: 'jira',
   description: 'Report discovered issues to JIRA',
@@ -312,6 +404,20 @@ export const jiraReporter: ReporterPlugin = {
     const createdIssues: Array<{ key: string; summary: string; issueId: string }> = [];
     const issueUpdates: IssueUpdate[] = [];
     const errors: string[] = [];
+    const assignedIssues: string[] = [];
+
+    // Auto-assign: resolve JIRA user from authorEmail once
+    let assignee: { id: string; displayName: string } | null = null;
+    const cloud = isJiraCloud(baseUrl);
+    if (context.authorEmail && !dryRun) {
+      const jiraUser = await searchJiraUser(baseUrl, username, apiToken, context.authorEmail);
+      if (jiraUser) {
+        const id = cloud ? jiraUser.accountId : jiraUser.name;
+        if (id) {
+          assignee = { id, displayName: jiraUser.displayName };
+        }
+      }
+    }
 
     for (const issue of issuesToReport) {
       // Skip issues that already have a JIRA reference
@@ -351,6 +457,21 @@ export const jiraReporter: ReporterPlugin = {
         const summary = (payload.fields as Record<string, unknown>).summary as string;
         createdIssues.push({ key: result.key, summary, issueId: issue.id });
 
+        // Auto-assign issue to commit author
+        if (assignee) {
+          const assigned = await assignJiraIssue(
+            baseUrl,
+            username,
+            apiToken,
+            result.key,
+            assignee.id,
+            cloud
+          );
+          if (assigned) {
+            assignedIssues.push(result.key);
+          }
+        }
+
         // Write back JIRA reference
         issueUpdates.push({
           issueId: issue.id,
@@ -386,6 +507,11 @@ export const jiraReporter: ReporterPlugin = {
         outputLines.push(`  ⚠ ${err}`);
       }
     }
+    if (assignedIssues.length > 0) {
+      outputLines.push(
+        `Assigned ${assignedIssues.length} issue(s) to ${assignee?.displayName ?? 'unknown'}`
+      );
+    }
 
     return {
       reporter: 'jira',
@@ -395,6 +521,8 @@ export const jiraReporter: ReporterPlugin = {
         created: createdIssues.length,
         skipped: report.issues.length - issuesToReport.length,
         errors: errors.length,
+        assigned: assignedIssues.length,
+        assignee: assignee?.displayName ?? null,
         issues: createdIssues.map((ci) => ({ key: ci.key, summary: ci.summary })),
         dryRun,
       },

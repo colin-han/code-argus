@@ -140,13 +140,13 @@ initializeEnv();
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { reviewByRefs, loadPreviousReview, validatePreviousReviewData } from './review/index.js';
 import { createDefaultRegistry } from './review/reporters/index.js';
 import type { ReporterConfig, ReporterContext } from './review/reporters/types.js';
 import type { ReviewReport } from './review/types.js';
-import { detectRefType } from './git/ref.js';
+import { detectRefType, getLastCommitAuthor } from './git/ref.js';
 import {
   loadConfig,
   loadGlobalConfig,
@@ -1047,7 +1047,7 @@ async function runReviewCommand(
       console.log(`
 @argus/core - AI Code Review
 =================================
-Repository:    ${repoPath}
+Repository:    ${resolve(repoPath)}
 Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
 =================================
 `);
@@ -1058,7 +1058,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       console.log(`
 @argus/core - AI Code Review
 =================================
-Repository:    ${repoPath}
+Repository:    ${resolve(repoPath)}
 ${sourceLabel}: ${sourceRef}
 ${targetLabel}: ${targetRef}
 Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
@@ -1175,12 +1175,14 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
     }
   } else {
     // Use reporter plugin system (registry & config already set up above)
+    const authorEmail = sourceRef ? getLastCommitAuthor(repoPath, sourceRef) : undefined;
     const reporterContext: ReporterContext = {
       repoPath,
       sourceRef: sourceRef ?? undefined,
       targetRef: targetRef ?? undefined,
       language: options.language,
       verbose: options.verbose,
+      authorEmail,
     };
 
     const { results, updatedReport } = await registry.executeAll(

@@ -34,6 +34,8 @@ export interface ReporterContext {
   language: 'en' | 'zh';
   /** Verbose mode */
   verbose: boolean;
+  /** Author email of the last commit on source ref (for auto-assign) */
+  authorEmail?: string;
 }
 
 // ============================================================================
