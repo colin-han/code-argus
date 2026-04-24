@@ -228,6 +228,58 @@ export const jiraReporter: ReporterPlugin = {
     }
   },
 
+  async validate(config: ReporterConfig): Promise<void> {
+    // 1. 先校验配置完整性（与 validateConfig 相同的逻辑）
+    const projectKey = config.projectKey as string;
+    if (!projectKey) {
+      throw new Error(
+        "JIRA reporter requires 'projectKey' config (--reporter-opt jira.projectKey=PROJ)"
+      );
+    }
+    const baseUrl = resolveConfig(config, 'baseUrl', 'JIRA_BASE_URL');
+    if (!baseUrl) {
+      throw new Error(
+        "JIRA reporter requires 'baseUrl' config or JIRA_BASE_URL environment variable"
+      );
+    }
+    const username = resolveConfig(config, 'username', 'JIRA_USERNAME');
+    const apiToken = resolveConfig(config, 'apiToken', 'JIRA_API_TOKEN');
+    if (!username || !apiToken) {
+      throw new Error(
+        'JIRA reporter requires authentication: set JIRA_USERNAME and JIRA_API_TOKEN environment variables'
+      );
+    }
+
+    const auth = Buffer.from(`${username}:${apiToken}`).toString('base64');
+    const baseHeaders = {
+      Authorization: `Basic ${auth}`,
+      Accept: 'application/json',
+    };
+
+    // 2. 校验 token 有效性：调用 /rest/api/2/myself
+    const myselfUrl = `${baseUrl.replace(/\/$/, '')}/rest/api/2/myself`;
+    const myselfRes = await fetch(myselfUrl, { headers: baseHeaders });
+    if (!myselfRes.ok) {
+      const body = await myselfRes.text().catch(() => '');
+      throw new Error(
+        `JIRA authentication failed (HTTP ${myselfRes.status}): invalid username or API token${body ? ` — ${body}` : ''}`
+      );
+    }
+
+    // 3. 校验 projectKey 存在：调用 /rest/api/2/project/{key}
+    const projectUrl = `${baseUrl.replace(/\/$/, '')}/rest/api/2/project/${projectKey}`;
+    const projectRes = await fetch(projectUrl, { headers: baseHeaders });
+    if (!projectRes.ok) {
+      if (projectRes.status === 404) {
+        throw new Error(`JIRA project '${projectKey}' does not exist`);
+      }
+      const body = await projectRes.text().catch(() => '');
+      throw new Error(
+        `JIRA project '${projectKey}' lookup failed (HTTP ${projectRes.status})${body ? `: ${body}` : ''}`
+      );
+    }
+  },
+
   async execute(
     report: ReviewReport,
     context: ReporterContext,

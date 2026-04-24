@@ -125,6 +125,16 @@ export interface ReporterPlugin {
   validateConfig?(config: ReporterConfig): void;
 
   /**
+   * Validate plugin availability before review starts.
+   * Perform runtime checks (e.g., API connectivity, token validity, resource existence).
+   * Called once before the review begins; if it throws, the review aborts early.
+   *
+   * @param config - Plugin configuration
+   * @throws Error if the plugin is not usable (e.g., invalid credentials, missing project)
+   */
+  validate?(config: ReporterConfig): Promise<void>;
+
+  /**
    * Execute report output.
    *
    * @param report  - Complete review report

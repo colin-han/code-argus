@@ -1080,6 +1080,55 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
   // Load merged config (global + local) for review settings
   const fileConfig = loadConfig();
 
+  // ── Pre-validate exporter reporters BEFORE starting the review ──
+  // This ensures we fail fast (e.g., invalid JIRA token, missing project)
+  // rather than wasting time on a full review that can't be exported.
+  const reporterNames = options.reporters.length > 0 ? [...options.reporters] : ['markdown'];
+
+  // Auto-enable JIRA reporter when JIRA config exists in config files
+  if (
+    fileConfig.jira &&
+    Object.keys(fileConfig.jira).length > 0 &&
+    !reporterNames.includes('jira')
+  ) {
+    reporterNames.push('jira');
+  }
+
+  const registry = createDefaultRegistry();
+
+  // Load custom reporter plugins from directories
+  for (const dir of options.reporterDirs) {
+    try {
+      await loadReporterPlugins(registry, dir);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`Warning: Failed to load reporter plugins from ${dir}: ${msg}`);
+    }
+  }
+
+  // Merge JIRA config from config file into reporterOpts (CLI opts take precedence)
+  const mergedReporterOpts = { ...options.reporterOpts };
+  if (fileConfig.jira && Object.keys(fileConfig.jira).length > 0) {
+    const jiraFromFile: Record<string, string | boolean> = {};
+    for (const [k, v] of Object.entries(fileConfig.jira)) {
+      if (v !== undefined) jiraFromFile[k] = v;
+    }
+    mergedReporterOpts['jira'] = { ...jiraFromFile, ...mergedReporterOpts['jira'] };
+  }
+
+  // Validate exporter reporters (e.g., JIRA token & project)
+  const exporterNames = reporterNames.filter((n) => registry.get(n)?.type === 'exporter');
+  if (exporterNames.length > 0) {
+    try {
+      await registry.validateAll(exporterNames, mergedReporterOpts);
+    } catch (validationError) {
+      const msg =
+        validationError instanceof Error ? validationError.message : String(validationError);
+      console.error(`Reporter validation failed: ${msg}`);
+      process.exit(1);
+    }
+  }
+
   // Use the new reviewByRefs API which auto-detects ref types
   const report = await reviewByRefs({
     repoPath,
@@ -1125,21 +1174,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       }
     }
   } else {
-    // Use reporter plugin system
-    const reporterNames = options.reporters.length > 0 ? options.reporters : ['markdown'];
-
-    const registry = createDefaultRegistry();
-
-    // Load custom reporter plugins from directories
-    for (const dir of options.reporterDirs) {
-      try {
-        await loadReporterPlugins(registry, dir);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error(`Warning: Failed to load reporter plugins from ${dir}: ${msg}`);
-      }
-    }
-
+    // Use reporter plugin system (registry & config already set up above)
     const reporterContext: ReporterContext = {
       repoPath,
       sourceRef: sourceRef ?? undefined,
@@ -1147,16 +1182,6 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       language: options.language,
       verbose: options.verbose,
     };
-
-    // Merge JIRA config from config file into reporterOpts (CLI opts take precedence)
-    const mergedReporterOpts = { ...options.reporterOpts };
-    if (fileConfig.jira && Object.keys(fileConfig.jira).length > 0) {
-      const jiraFromFile: Record<string, string | boolean> = {};
-      for (const [k, v] of Object.entries(fileConfig.jira)) {
-        if (v !== undefined) jiraFromFile[k] = v;
-      }
-      mergedReporterOpts['jira'] = { ...jiraFromFile, ...mergedReporterOpts['jira'] };
-    }
 
     const { results, updatedReport } = await registry.executeAll(
       reporterNames,

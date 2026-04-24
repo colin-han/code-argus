@@ -71,6 +71,41 @@ export class ReporterRegistry {
   }
 
   /**
+   * Validate selected reporters before the review starts.
+   * Calls each reporter's validate() method in parallel.
+   * Throws on the first validation failure so the caller can abort early.
+   *
+   * Reporters without a validate() method are silently skipped.
+   */
+  async validateAll(
+    reporterNames: string[],
+    configs: Record<string, ReporterConfig> = {}
+  ): Promise<void> {
+    const pluginsWithValidate = reporterNames
+      .filter((name) => {
+        const plugin = this.plugins.get(name);
+        return plugin && plugin.validate;
+      })
+      .map((name) => ({ name, plugin: this.plugins.get(name)! }));
+
+    // Run all validations in parallel; fail fast on first error
+    const results = await Promise.allSettled(
+      pluginsWithValidate.map(({ name, plugin }) => plugin.validate!(configs[name] || {}))
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i]!;
+      if (result.status === 'rejected') {
+        const name = pluginsWithValidate[i]!.name;
+        const reason = (result as PromiseRejectedResult).reason;
+        throw new Error(
+          `Reporter '${name}' validation failed: ${reason instanceof Error ? reason.message : String(reason)}`
+        );
+      }
+    }
+  }
+
+  /**
    * Execute selected reporters and merge issue updates back into the report.
    *
    * Execution order:
