@@ -19,22 +19,118 @@ process.on('unhandledRejection', (reason) => {
 
 // Global AbortController for graceful shutdown
 const globalAbortController = new AbortController();
-let isGlobalShuttingDown = false;
+// Soft abort: 仅让 orchestrator 跳过后续 agents 分析，继续生成报告
+const softAbortController = new AbortController();
 
-const handleGlobalShutdown = (signal: string) => {
-  if (isGlobalShuttingDown) return;
-  isGlobalShuttingDown = true;
-  console.log(`\n[Argus] Received ${signal}, gracefully shutting down...`);
+/**
+ * 中断状态机：
+ * - idle:       未中断
+ * - prompting:  收到首次 SIGINT，正在等待用户决定是否汇总
+ * - soft:       用户选择汇总 —— softAbortController 已 abort，继续走报告流程
+ * - hard:       硬退出（用户拒绝 / 再次 SIGINT / SIGTERM）
+ */
+type InterruptState = 'idle' | 'prompting' | 'soft' | 'hard';
+let interruptState: InterruptState = 'idle';
+
+const hardExit = (code = 130): void => {
+  interruptState = 'hard';
   globalAbortController.abort();
+  softAbortController.abort();
   const forceExitTimer = setTimeout(() => {
     console.log('[Argus] Cleanup timeout, forcing exit');
     process.exit(1);
-  }, 10000);
+  }, 5000);
   forceExitTimer.unref();
+  // 立即退出，不等待 cleanup（符合 Ctrl+C 用户预期）
+  process.exit(code);
 };
 
-process.on('SIGTERM', () => handleGlobalShutdown('SIGTERM'));
-process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
+/**
+ * 提示用户是否汇总已发现的问题。
+ * 默认 yes（直接回车即汇总）；输入 n/no 退出；Ctrl+C 立即退出。
+ */
+const promptSoftAbort = async (): Promise<'summarize' | 'exit'> => {
+  const { createInterface } = await import('node:readline');
+
+  return new Promise((resolve) => {
+    // 使用 stderr 写提示，避免污染 stdout（stdout 可能被用作 reporter 输出）
+    process.stderr.write(
+      '\n[Argus] 收到中断信号。是否汇总当前已发现的问题并生成报告？[Y/n] (再按 Ctrl+C 立即退出): '
+    );
+
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stderr,
+      terminal: true,
+    });
+
+    // readline 在 terminal 模式下会拦截 SIGINT 并发出 'SIGINT' 事件
+    // 我们监听它，实现"prompt 期间再按 Ctrl+C 立即退出"
+    rl.on('SIGINT', () => {
+      rl.close();
+      process.stderr.write('\n[Argus] 强制退出。\n');
+      hardExit(130);
+    });
+
+    rl.on('line', (answer) => {
+      rl.close();
+      // 默认 yes：空输入（直接回车）或 y/yes 都视为汇总
+      // 只有明确输入 n/no 才退出
+      const trimmed = answer.trim();
+      const isNo = /^no?$/i.test(trimmed);
+      resolve(isNo ? 'exit' : 'summarize');
+    });
+
+    // 用户直接关闭 stdin 也视为退出
+    rl.on('close', () => {
+      // 如果是通过 'line' 事件已 resolve，这里 resolve 无效（Promise 只能 resolve 一次）
+      resolve('exit');
+    });
+  });
+};
+
+const handleSigint = async (): Promise<void> => {
+  // 状态机驱动
+  if (interruptState === 'prompting') {
+    // prompt 期间的 SIGINT 已由 readline 的 'SIGINT' 事件处理
+    // 这个分支理论上不会到达（rl 会优先消费 SIGINT）
+    return;
+  }
+
+  if (interruptState === 'soft' || interruptState === 'hard') {
+    // 已经处于 soft/hard 状态，再次 Ctrl+C → 硬退出
+    process.stderr.write('\n[Argus] 强制退出。\n');
+    hardExit(130);
+    return;
+  }
+
+  // idle → prompting
+  interruptState = 'prompting';
+  const choice = await promptSoftAbort();
+
+  if (choice === 'summarize') {
+    interruptState = 'soft';
+    console.log('[Argus] 已停止后续分析，正在汇总已发现的问题...');
+    softAbortController.abort();
+  } else {
+    console.log('[Argus] 已取消。');
+    hardExit(130);
+  }
+};
+
+const handleSigterm = (): void => {
+  // SIGTERM 不提示，直接硬退出
+  console.log('\n[Argus] Received SIGTERM, shutting down...');
+  hardExit(143);
+};
+
+process.on('SIGTERM', handleSigterm);
+process.on('SIGINT', () => {
+  handleSigint().catch((err) => {
+    console.error('[Argus] Interrupt handler error:', err);
+    hardExit(1);
+  });
+});
 
 import 'dotenv/config';
 import { initializeEnv } from './config/env.js';
@@ -1002,7 +1098,10 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       verifyFixes: options.verifyFixes,
       // Worktree requirement
       requireWorktree: options.requireWorktree,
-      abortController: globalAbortController,
+      // orchestrator 使用 softAbortController：
+      // - 用户软中断时，正在运行的 agents 流会被中止，已上报的 issues 得以保留
+      // - orchestrator 内部检测到 abort 后跳过剩余 agents，继续生成报告
+      abortController: softAbortController,
       // Max concurrent agent API calls (from config, defaults applied downstream)
       maxConcurrency: fileConfig.maxConcurrency,
     },

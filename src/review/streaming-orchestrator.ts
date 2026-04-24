@@ -2225,8 +2225,33 @@ Write all text (title, description, suggestion) in Chinese.`,
     // 为每个任务维护当前的 rate limit 状态，供事件处理用
     const rateLimitStateByIndex = new Map<number, boolean>();
 
+    // Soft-abort 跟踪：首次检测到 abort 时打印一次提示
+    const abortSignal = this.options.abortController?.signal;
+    let softAbortLogged = false;
+
+    // Agent 进度计数（用于日志输出 [X/N]）
+    const totalTasks = specs.length;
+    let startedCount = 0;
+    let completedCount = 0;
+    const countedStartByIndex = new Set<number>();
+    const countedCompleteByIndex = new Set<number>();
+
     const results = await runTasks<AgentRunResult>(
       specs.map((spec) => async () => {
+        // 在启动 agent 前检查是否已被用户中断
+        // 已中断时直接返回空结果（已实时上报的 issues 通过 MCP 已在 dedup/validator 中保留）
+        if (abortSignal?.aborted) {
+          if (!softAbortLogged) {
+            softAbortLogged = true;
+            this.progress.warn('用户已中断：跳过剩余 agents，准备汇总已发现的问题...');
+          }
+          const label = spec.segmentLabel
+            ? `[${spec.segmentLabel}] ${spec.agentType}`
+            : spec.agentType;
+          this.progress.agent(spec.agentType, 'completed', `${label} 已跳过（用户中断）`);
+          return { tokensUsed: 0, checklists: [] };
+        }
+
         return this.runStreamingAgent(
           spec.agentType,
           spec.context,
@@ -2254,7 +2279,23 @@ Write all text (title, description, suggestion) in Chinese.`,
           },
         },
         onEvent: (event) => {
-          this.handleAgentTaskEvent(event, specs, rateLimitStateByIndex);
+          // 维护进度计数：task-start（首次 attempt=1）与终态（success/最终 failure）
+          if (event.type === 'task-start' && event.attempt === 1) {
+            if (!countedStartByIndex.has(event.index)) {
+              countedStartByIndex.add(event.index);
+              startedCount++;
+            }
+          } else if (event.type === 'task-success') {
+            if (!countedCompleteByIndex.has(event.index)) {
+              countedCompleteByIndex.add(event.index);
+              completedCount++;
+            }
+          }
+          this.handleAgentTaskEvent(event, specs, rateLimitStateByIndex, {
+            totalTasks,
+            startedCount,
+            completedCount,
+          });
         },
       }
     );
@@ -2290,15 +2331,24 @@ Write all text (title, description, suggestion) in Chinese.`,
   private handleAgentTaskEvent(
     event: SchedulerEvent,
     specs: AgentTaskSpec[],
-    rateLimitStateByIndex: Map<number, boolean>
+    rateLimitStateByIndex: Map<number, boolean>,
+    progress: { totalTasks: number; startedCount: number; completedCount: number }
   ): void {
     const spec = specs[event.index];
     if (!spec) return;
 
     const label = spec.segmentLabel ? `[${spec.segmentLabel}] ${spec.agentType}` : spec.agentType;
     const isRateLimit = event.error ? isRateLimitError(event.error) : false;
+    const { totalTasks, startedCount, completedCount } = progress;
 
     switch (event.type) {
+      case 'task-start': {
+        // 仅在首次 attempt 时输出"启动"日志，重试时由 task-retry 分支负责
+        if (event.attempt === 1) {
+          this.progress.info(`▶ [${startedCount}/${totalTasks}] Agent ${label} 开始分析`);
+        }
+        break;
+      }
       case 'task-error': {
         rateLimitStateByIndex.set(event.index, isRateLimit);
         const errorKind = isRateLimit ? '速率限制 (429)' : '错误';
@@ -2325,8 +2375,9 @@ Write all text (title, description, suggestion) in Chinese.`,
         break;
       }
       case 'task-success': {
+        this.progress.info(`✓ [${completedCount}/${totalTasks}] Agent ${label} 完成`);
         if (event.attempt > 1) {
-          this.progress.info(`Agent ${label} 在第 ${event.attempt} 次尝试后成功`);
+          this.progress.info(`  Agent ${label} 在第 ${event.attempt} 次尝试后成功`);
         }
         rateLimitStateByIndex.delete(event.index);
         break;
