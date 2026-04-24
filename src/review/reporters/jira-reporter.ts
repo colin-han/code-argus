@@ -47,6 +47,49 @@ function resolveConfig(config: ReporterConfig, key: string, envKey: string): str
 }
 
 /**
+ * Result of basic configuration validation
+ */
+interface ValidatedBasicConfig {
+  projectKey: string;
+  baseUrl: string;
+  username: string;
+  apiToken: string;
+}
+
+/**
+ * Resolve and validate basic JIRA configuration.
+ * Throws an Error if required configuration is missing.
+ *
+ * This helper function is used by both validateConfig and validate methods
+ * to avoid code duplication.
+ */
+function resolveAndValidateBasicConfig(config: ReporterConfig): ValidatedBasicConfig {
+  const projectKey = config.projectKey as string;
+  if (!projectKey) {
+    throw new Error(
+      "JIRA reporter requires 'projectKey' config (--reporter-opt jira.projectKey=PROJ)"
+    );
+  }
+
+  const baseUrl = resolveConfig(config, 'baseUrl', 'JIRA_BASE_URL');
+  if (!baseUrl) {
+    throw new Error(
+      "JIRA reporter requires 'baseUrl' config or JIRA_BASE_URL environment variable"
+    );
+  }
+
+  const username = resolveConfig(config, 'username', 'JIRA_USERNAME');
+  const apiToken = resolveConfig(config, 'apiToken', 'JIRA_API_TOKEN');
+  if (!username || !apiToken) {
+    throw new Error(
+      'JIRA reporter requires authentication: set JIRA_USERNAME and JIRA_API_TOKEN environment variables'
+    );
+  }
+
+  return { projectKey, baseUrl, username, apiToken };
+}
+
+/**
  * Map a ValidatedIssue to a JIRA issue creation payload
  */
 function mapToJiraPayload(
@@ -297,50 +340,13 @@ export const jiraReporter: ReporterPlugin = {
   type: 'exporter',
 
   validateConfig(config: ReporterConfig): void {
-    const projectKey = config.projectKey as string;
-    if (!projectKey) {
-      throw new Error(
-        "JIRA reporter requires 'projectKey' config (--reporter-opt jira.projectKey=PROJ)"
-      );
-    }
-
-    const baseUrl = resolveConfig(config, 'baseUrl', 'JIRA_BASE_URL');
-    if (!baseUrl) {
-      throw new Error(
-        "JIRA reporter requires 'baseUrl' config or JIRA_BASE_URL environment variable"
-      );
-    }
-
-    const username = resolveConfig(config, 'username', 'JIRA_USERNAME');
-    const apiToken = resolveConfig(config, 'apiToken', 'JIRA_API_TOKEN');
-    if (!username || !apiToken) {
-      throw new Error(
-        'JIRA reporter requires authentication: set JIRA_USERNAME and JIRA_API_TOKEN environment variables'
-      );
-    }
+    // 复用基本配置验证逻辑
+    resolveAndValidateBasicConfig(config);
   },
 
   async validate(config: ReporterConfig): Promise<void> {
-    // 1. 先校验配置完整性（与 validateConfig 相同的逻辑）
-    const projectKey = config.projectKey as string;
-    if (!projectKey) {
-      throw new Error(
-        "JIRA reporter requires 'projectKey' config (--reporter-opt jira.projectKey=PROJ)"
-      );
-    }
-    const baseUrl = resolveConfig(config, 'baseUrl', 'JIRA_BASE_URL');
-    if (!baseUrl) {
-      throw new Error(
-        "JIRA reporter requires 'baseUrl' config or JIRA_BASE_URL environment variable"
-      );
-    }
-    const username = resolveConfig(config, 'username', 'JIRA_USERNAME');
-    const apiToken = resolveConfig(config, 'apiToken', 'JIRA_API_TOKEN');
-    if (!username || !apiToken) {
-      throw new Error(
-        'JIRA reporter requires authentication: set JIRA_USERNAME and JIRA_API_TOKEN environment variables'
-      );
-    }
+    // 1. 先校验配置完整性（复用 validateConfig 的逻辑）
+    const { projectKey, baseUrl, username, apiToken } = resolveAndValidateBasicConfig(config);
 
     const auth = Buffer.from(`${username}:${apiToken}`).toString('base64');
     const baseHeaders = {

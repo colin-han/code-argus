@@ -83,7 +83,7 @@ import { executeFixVerifier } from './fix-verifier.js';
 import type { FixVerificationSummary, PreviousReviewData } from './types.js';
 import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '../diff/index.js';
 import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
-import { runTasks, type SchedulerEvent } from '../task-scheduler/index.js';
+import { runTasks, type SchedulerEvent, type TaskContext } from '../task-scheduler/index.js';
 
 /**
  * Agent 执行结果（runStreamingAgent 返回）
@@ -2226,7 +2226,6 @@ Write all text (title, description, suggestion) in Chinese.`,
     const rateLimitStateByIndex = new Map<number, boolean>();
 
     // Soft-abort 跟踪：首次检测到 abort 时打印一次提示
-    const abortSignal = this.options.abortController?.signal;
     let softAbortLogged = false;
 
     // Agent 进度计数（用于日志输出 [X/N]）
@@ -2237,10 +2236,10 @@ Write all text (title, description, suggestion) in Chinese.`,
     const countedCompleteByIndex = new Set<number>();
 
     const results = await runTasks<AgentRunResult>(
-      specs.map((spec) => async () => {
+      specs.map((spec) => async (context: TaskContext) => {
         // 在启动 agent 前检查是否已被用户中断
         // 已中断时直接返回空结果（已实时上报的 issues 通过 MCP 已在 dedup/validator 中保留）
-        if (abortSignal?.aborted) {
+        if (context.signal.aborted) {
           if (!softAbortLogged) {
             softAbortLogged = true;
             this.progress.warn('用户已中断：跳过剩余 agents，准备汇总已发现的问题...');

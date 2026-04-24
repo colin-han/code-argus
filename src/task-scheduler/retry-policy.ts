@@ -59,7 +59,7 @@ export function normalizeRetryConfig(partial?: PartialRetryConfig): RetryConfig 
  *
  * 对于限流错误：
  * - 如果服务器提供了 Retry-After 且 respectRetryAfter 为 true
- * - 则 baseDelay = max(baseDelay, retryAfterMs)
+ * - 则 baseDelay = retryAfterMs（直接使用服务器建议的等待时间）
  * - 然后应用指数退避
  */
 export function calculateRetryDelay(params: {
@@ -74,11 +74,8 @@ export function calculateRetryDelay(params: {
 
   // 如果是限流策略且服务器提供了 Retry-After
   const rateLimitPolicy = policy as RateLimitRetryPolicy;
-  if (
-    retryAfterMs !== undefined &&
-    rateLimitPolicy.respectRetryAfter !== false &&
-    retryAfterMs > baseDelay
-  ) {
+  if (retryAfterMs !== undefined && rateLimitPolicy.respectRetryAfter !== false) {
+    // 当 respectRetryAfter 为 true 时，直接使用服务器的建议值
     baseDelay = retryAfterMs;
   }
 

@@ -260,10 +260,14 @@ function applyIssueUpdates(report: ReviewReport, updates: IssueUpdate[]): Review
 
     // Merge externalRefs (don't overwrite existing ones from other systems)
     if (update.externalRefs) {
-      issue.externalRefs = {
-        ...issue.externalRefs,
-        ...update.externalRefs,
-      };
+      const merged = { ...issue.externalRefs };
+      for (const [system, ref] of Object.entries(update.externalRefs)) {
+        // Only add ref if the system doesn't already have one
+        if (!merged[system]) {
+          merged[system] = ref;
+        }
+      }
+      issue.externalRefs = merged;
     }
   }
 
