@@ -7,6 +7,7 @@
  * 3. 检测是否需要分段审核
  */
 
+import { minimatch } from 'minimatch';
 import { parseDiff, type DiffFile } from '../git/parser.js';
 
 /**
@@ -19,13 +20,16 @@ export interface PreprocessedDiff {
   processedSize: number;
   /** 删除的文件列表 */
   deletedFiles: string[];
-  /** 解析后的 diff 文件（不含删除文件） */
+  /** 被 exclude 规则排除的文件列表 */
+  excludedFiles: string[];
+  /** 解析后的 diff 文件（不含删除文件和被排除的文件） */
   diffFiles: DiffFile[];
   /** 原始统计信息 */
   stats: {
     originalSize: number;
     originalFileCount: number;
     deletedFileCount: number;
+    excludedFileCount: number;
     modifiedFileCount: number;
     addedFileCount: number;
     savedBytes: number;
@@ -40,12 +44,30 @@ export interface PreprocessorConfig {
   segmentSizeLimit: number;
   /** 是否启用详细日志 */
   verbose?: boolean;
+  /**
+   * 文件路径 exclude 模式（glob 格式）
+   * 匹配的文件会从 diff 中完全移除，不参与审查
+   * @example ["docs/**", "**\/*.md", "**\/node_modules/**"]
+   */
+  excludePatterns?: string[];
 }
 
 const DEFAULT_CONFIG: PreprocessorConfig = {
   segmentSizeLimit: 150 * 1024, // 150KB
   verbose: false,
 };
+
+/**
+ * 判断文件路径是否匹配任一 glob 模式
+ */
+function matchesAnyPattern(filePath: string, patterns: string[]): boolean {
+  for (const pattern of patterns) {
+    if (minimatch(filePath, pattern, { matchBase: true, dot: true })) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * 从 diff 中提取删除文件的内容并移除
@@ -64,11 +86,13 @@ export function preprocessDiff(
       processedDiff: '',
       processedSize: 0,
       deletedFiles: [],
+      excludedFiles: [],
       diffFiles: [],
       stats: {
         originalSize: 0,
         originalFileCount: 0,
         deletedFileCount: 0,
+        excludedFileCount: 0,
         modifiedFileCount: 0,
         addedFileCount: 0,
         savedBytes: 0,
@@ -81,26 +105,33 @@ export function preprocessDiff(
   // 解析 diff 获取文件信息
   const allDiffFiles = parseDiff(rawDiff);
 
-  // 分离删除文件和其他文件
+  // 分离删除文件、排除文件和其他文件
   const deletedFiles: string[] = [];
-  const nonDeletedFiles: DiffFile[] = [];
+  const excludedFiles: string[] = [];
+  const remainingFiles: DiffFile[] = [];
+  const excludePatterns = cfg.excludePatterns ?? [];
 
   for (const file of allDiffFiles) {
     if (file.type === 'delete') {
       deletedFiles.push(file.path);
-    } else {
-      nonDeletedFiles.push(file);
+      continue;
     }
+    if (excludePatterns.length > 0 && matchesAnyPattern(file.path, excludePatterns)) {
+      excludedFiles.push(file.path);
+      continue;
+    }
+    remainingFiles.push(file);
   }
 
-  // 重建 diff：移除删除文件的具体内容
+  // 重建 diff：移除删除文件和排除文件的内容
   let processedDiff = rawDiff;
+  const pathsToRemove = [...deletedFiles, ...excludedFiles];
 
-  if (deletedFiles.length > 0) {
-    // 使用正则匹配并移除删除文件的 diff 块
-    for (const deletedPath of deletedFiles) {
+  if (pathsToRemove.length > 0) {
+    // 使用正则匹配并移除对应文件的 diff 块
+    for (const path of pathsToRemove) {
       // 转义路径中的特殊字符
-      const escapedPath = deletedPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // 匹配从 "diff --git" 到下一个 "diff --git" 或文件末尾的内容
       const regex = new RegExp(
         `diff --git a\\/${escapedPath} b\\/${escapedPath}[\\s\\S]*?(?=diff --git|$)`,
@@ -117,22 +148,29 @@ export function preprocessDiff(
     originalSize,
     originalFileCount: allDiffFiles.length,
     deletedFileCount: deletedFiles.length,
-    modifiedFileCount: nonDeletedFiles.filter((f) => f.type === 'modify').length,
-    addedFileCount: nonDeletedFiles.filter((f) => f.type === 'add').length,
+    excludedFileCount: excludedFiles.length,
+    modifiedFileCount: remainingFiles.filter((f) => f.type === 'modify').length,
+    addedFileCount: remainingFiles.filter((f) => f.type === 'add').length,
     savedBytes,
   };
 
-  if (cfg.verbose && deletedFiles.length > 0) {
-    console.log(
-      `[Preprocessor] 过滤删除文件: ${deletedFiles.length} 个, 节省 ${(savedBytes / 1024).toFixed(1)}KB`
-    );
+  if (cfg.verbose) {
+    if (deletedFiles.length > 0) {
+      console.log(`[Preprocessor] 过滤删除文件: ${deletedFiles.length} 个`);
+    }
+    if (excludedFiles.length > 0) {
+      console.log(
+        `[Preprocessor] 排除文件 (--exclude): ${excludedFiles.length} 个\n  ${excludedFiles.join('\n  ')}`
+      );
+    }
   }
 
   return {
     processedDiff,
     processedSize,
     deletedFiles,
-    diffFiles: nonDeletedFiles,
+    excludedFiles,
+    diffFiles: remainingFiles,
     stats,
   };
 }

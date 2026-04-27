@@ -285,6 +285,9 @@ Options (review command):
   --skip-validation        Skip issue validation (faster but less accurate)
   --verbose                Enable verbose output
   --require-worktree       Require worktree creation, fail if unable to create
+  --exclude=<pattern>      Glob pattern for files to exclude from review (can be used multiple times)
+                           Matched files are removed from the diff and never reviewed.
+                           Example: --exclude='docs/**' --exclude='**/*.md'
 
 Issue Management Options:
   --issue-management=<type> Issue management plugin: local-file (default) | jira
@@ -800,6 +803,7 @@ function parseOptions(args: string[]): {
   verbose: boolean;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
+  excludeFiles: string[];
   externalDiff: ExternalDiffOptions;
   // Legacy reporter support (deprecated)
   reporters: string[];
@@ -819,6 +823,7 @@ function parseOptions(args: string[]): {
     verbose: boolean;
     verifyFixes?: boolean;
     requireWorktree?: boolean;
+    excludeFiles: string[];
     externalDiff: ExternalDiffOptions;
     // Legacy reporter support (deprecated)
     reporters: string[];
@@ -837,6 +842,7 @@ function parseOptions(args: string[]): {
     verbose: false,
     verifyFixes: undefined,
     requireWorktree: undefined,
+    excludeFiles: [],
     externalDiff: {},
     reporters: [],
     reporterOpts: {},
@@ -931,6 +937,17 @@ function parseOptions(args: string[]): {
     } else if (arg === '--require-worktree') {
       options.requireWorktree = true;
       i++;
+    } else if (matchesFlag('--exclude', arg)) {
+      const { value, next } = readValue('--exclude', i);
+      if (value) {
+        // 支持逗号分隔的多个模式，也支持重复使用 --exclude
+        const patterns = value
+          .split(',')
+          .map((p) => p.trim())
+          .filter(Boolean);
+        options.excludeFiles.push(...patterns);
+      }
+      i = next + 1;
     } else if (matchesFlag('--reporters', arg)) {
       // Legacy: --reporters is deprecated but still supported
       const { value, next } = readValue('--reporters', i);
@@ -1121,6 +1138,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       abortController: softAbortController,
       // Max concurrent agent API calls (from config, defaults applied downstream)
       maxConcurrency: fileConfig.maxConcurrency,
+      // File exclusion patterns (CLI only)
+      excludeFiles: options.excludeFiles.length > 0 ? options.excludeFiles : undefined,
       // Issue management plugin
       issueManagementPlugin,
       pluginConfig,

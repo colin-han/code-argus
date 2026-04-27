@@ -561,6 +561,13 @@ export interface OrchestratorOptions {
    */
   maxDiffSize?: number;
   /**
+   * Glob patterns for files to exclude from review
+   * Matched files are removed from the diff entirely and never reviewed by any agent.
+   * Patterns use minimatch with matchBase: true, so "*.md" matches any .md file at any depth.
+   * @example ["docs/**", "**\/*.md", "**\/generated/**"]
+   */
+  excludeFiles?: string[];
+  /**
    * Issue Management Plugin to use (default: undefined = no plugin)
    * When set, issues will be persisted to the external system automatically
    * @deprecated Use plugin system instead

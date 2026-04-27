@@ -176,6 +176,7 @@ const DEFAULT_OPTIONS: Required<
   requireWorktree: false,
   abortController: undefined,
   maxDiffSize: 1 * 1024 * 1024, // 1MB
+  excludeFiles: [],
   issueManagementPlugin: undefined,
   pluginConfig: undefined,
   outputFormat: undefined,
@@ -1665,22 +1666,29 @@ export class StreamingReviewOrchestrator {
 
     if (externalDiffContent !== null) {
       // External diff mode - skip git diff computation
-      // Step 1: 预处理 - 过滤删除文件（通用规则）
-      this.progress.progress('预处理 diff（过滤删除文件）...');
-      const preprocessed = preprocessDiff(externalDiffContent, { verbose: this.options.verbose });
+      // Step 1: 预处理 - 过滤删除文件（通用规则）和用户指定的 exclude 文件
+      this.progress.progress('预处理 diff（过滤删除/排除文件）...');
+      const preprocessed = preprocessDiff(externalDiffContent, {
+        verbose: this.options.verbose,
+        excludePatterns: this.options.excludeFiles,
+      });
       const deletedFiles = preprocessed.deletedFiles;
+      const excludedFiles = preprocessed.excludedFiles;
 
       if (deletedFiles.length > 0) {
         this.progress.info(
           `过滤删除文件: ${deletedFiles.length} 个, 节省 ${(preprocessed.stats.savedBytes / 1024).toFixed(1)}KB`
         );
       }
+      if (excludedFiles.length > 0) {
+        this.progress.info(`排除文件 (--exclude): ${excludedFiles.length} 个`);
+      }
 
       // Step 2: 解析处理后的 diff
       this.progress.progress('解析 diff...');
       const diffFiles = preprocessed.diffFiles;
       this.progress.success(
-        `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件)`
+        `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件，${excludedFiles.length} 个 exclude 文件)`
       );
 
       // Local diff analysis (fast, no LLM)
@@ -1799,21 +1807,28 @@ export class StreamingReviewOrchestrator {
     const diffSizeKB = Math.round(rawDiffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
 
-    // 预处理 - 过滤删除文件（通用规则）
-    this.progress.progress('预处理 diff（过滤删除文件）...');
-    const preprocessed = preprocessDiff(rawDiffResult.diff, { verbose: this.options.verbose });
+    // 预处理 - 过滤删除文件（通用规则）和用户指定的 exclude 文件
+    this.progress.progress('预处理 diff（过滤删除/排除文件）...');
+    const preprocessed = preprocessDiff(rawDiffResult.diff, {
+      verbose: this.options.verbose,
+      excludePatterns: this.options.excludeFiles,
+    });
     const deletedFiles = preprocessed.deletedFiles;
+    const excludedFiles = preprocessed.excludedFiles;
 
     if (deletedFiles.length > 0) {
       this.progress.info(
         `过滤删除文件: ${deletedFiles.length} 个, 节省 ${(preprocessed.stats.savedBytes / 1024).toFixed(1)}KB`
       );
     }
+    if (excludedFiles.length > 0) {
+      this.progress.info(`排除文件 (--exclude): ${excludedFiles.length} 个`);
+    }
 
     // 使用预处理后的 diff 文件列表
     const diffFiles = preprocessed.diffFiles;
     this.progress.success(
-      `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件)`
+      `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件，${excludedFiles.length} 个 exclude 文件)`
     );
 
     // 更新 diffResult 使用处理后的 diff
