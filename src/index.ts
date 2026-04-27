@@ -142,11 +142,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import { reviewByRefs, loadPreviousReview, validatePreviousReviewData } from './review/index.js';
-import { createDefaultRegistry } from './review/reporters/index.js';
-import type { ReporterConfig, ReporterContext } from './review/reporters/types.js';
-import type { ReviewReport } from './review/types.js';
-import { detectRefType, getLastCommitAuthor } from './git/ref.js';
+import { reviewByRefs } from './review/index.js';
+import { detectRefType } from './git/ref.js';
 import {
   loadConfig,
   loadGlobalConfig,
@@ -160,7 +157,6 @@ import {
   setLocalRepoPath,
 } from './config/store.js';
 import type { ArgusConfig, JiraConfig } from './config/store.js';
-import type { PreviousReviewData } from './review/types.js';
 
 /**
  * Get package version from package.json
@@ -288,9 +284,13 @@ Options (review command):
   --agents-dir=<path>      Custom agent definitions directory
   --skip-validation        Skip issue validation (faster but less accurate)
   --verbose                Enable verbose output
-  --previous-review=<file> Previous review JSON file for fix verification
-  --no-verify-fixes        Disable fix verification (when previous-review is set)
   --require-worktree       Require worktree creation, fail if unable to create
+
+Issue Management Options:
+  --issue-management=<type> Issue management plugin: local-file (default) | jira
+                           local-file: Store issues in .argus/issues/{branch}.json
+                           jira: Sync issues to JIRA with branch isolation
+  --output=<format>        Output format: summary (default) | markdown | json
 
 External Diff Options (for integration with PR systems):
   --diff-file=<path>       Read diff from file instead of computing from git
@@ -324,8 +324,11 @@ Examples:
   argus review /path/to/repo feature-branch main --json-logs
   argus config set api-key sk-ant-xxx
 
-  # Verify fixes from previous review
-  argus review /path/to/repo feature-branch main --previous-review=./review-1.json
+  # Use JIRA plugin for issue management
+  argus review /path/to/repo feature-branch main --issue-management=jira
+
+  # Specify output format
+  argus review /path/to/repo feature-branch main --output=markdown
 
   # External diff from file (e.g., from Bitbucket API)
   argus review /path/to/repo --diff-file=./pr.diff
@@ -747,13 +750,16 @@ function parseOptions(args: string[]): {
   skipValidation: boolean;
   jsonLogs: boolean;
   verbose: boolean;
-  previousReview?: string;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
   externalDiff: ExternalDiffOptions;
+  // Legacy reporter support (deprecated)
   reporters: string[];
-  reporterOpts: Record<string, ReporterConfig>;
+  reporterOpts: Record<string, Record<string, string | boolean | number>>;
   reporterDirs: string[];
+  // New issue management support
+  issueManagement?: 'local-file' | 'jira';
+  output?: 'summary' | 'markdown' | 'json';
 } {
   const options: {
     language: 'en' | 'zh';
@@ -763,13 +769,16 @@ function parseOptions(args: string[]): {
     skipValidation: boolean;
     jsonLogs: boolean;
     verbose: boolean;
-    previousReview?: string;
     verifyFixes?: boolean;
     requireWorktree?: boolean;
     externalDiff: ExternalDiffOptions;
+    // Legacy reporter support (deprecated)
     reporters: string[];
-    reporterOpts: Record<string, ReporterConfig>;
+    reporterOpts: Record<string, Record<string, string | boolean | number>>;
     reporterDirs: string[];
+    // New issue management support
+    issueManagement?: 'local-file' | 'jira';
+    output?: 'summary' | 'markdown' | 'json';
   } = {
     language: 'zh',
     configDirs: [],
@@ -778,13 +787,14 @@ function parseOptions(args: string[]): {
     skipValidation: false,
     jsonLogs: false,
     verbose: false,
-    previousReview: undefined,
     verifyFixes: undefined,
     requireWorktree: undefined,
     externalDiff: {},
     reporters: [],
     reporterOpts: {},
     reporterDirs: [],
+    issueManagement: undefined,
+    output: undefined,
   };
 
   /**
@@ -844,21 +854,18 @@ function parseOptions(args: string[]): {
     } else if (arg === '--verbose') {
       options.verbose = true;
       i++;
-    } else if (matchesFlag('--previous-review', arg)) {
-      const { value, next } = readValue('--previous-review', i);
-      if (value) {
-        options.previousReview = value;
-        if (options.verifyFixes === undefined) {
-          options.verifyFixes = true;
-        }
+    } else if (matchesFlag('--issue-management', arg)) {
+      const { value, next } = readValue('--issue-management', i);
+      if (value === 'local-file' || value === 'jira') {
+        options.issueManagement = value;
       }
       i = next + 1;
-    } else if (arg === '--no-verify-fixes') {
-      options.verifyFixes = false;
-      i++;
-    } else if (arg === '--verify-fixes') {
-      options.verifyFixes = true;
-      i++;
+    } else if (matchesFlag('--output', arg)) {
+      const { value, next } = readValue('--output', i);
+      if (value === 'summary' || value === 'markdown' || value === 'json') {
+        options.output = value;
+      }
+      i = next + 1;
     } else if (matchesFlag('--diff-file', arg)) {
       const { value, next } = readValue('--diff-file', i);
       if (value) options.externalDiff.diffFile = value;
@@ -877,18 +884,19 @@ function parseOptions(args: string[]): {
       options.requireWorktree = true;
       i++;
     } else if (matchesFlag('--reporters', arg)) {
+      // Legacy: --reporters is deprecated but still supported
       const { value, next } = readValue('--reporters', i);
       if (value) options.reporters = value.split(',').map((r) => r.trim());
       i = next + 1;
     } else if (matchesFlag('--format', arg)) {
-      // Backward compatibility: --format=X maps to --reporters=X
+      // Legacy: --format maps to --reporters
       const { value, next } = readValue('--format', i);
       if (value && options.reporters.length === 0) {
         options.reporters = [value.trim()];
       }
       i = next + 1;
     } else if (matchesFlag('--reporter-opt', arg)) {
-      // Format: --reporter-opt=pluginName.key=value or --reporter-opt pluginName.key=value
+      // Legacy: --reporter-opt support
       const { value: val, next } = readValue('--reporter-opt', i);
       if (val) {
         const dotIndex = val.indexOf('.');
@@ -919,6 +927,12 @@ function parseOptions(args: string[]): {
       const { value, next } = readValue('--reporter-dir', i);
       if (value) options.reporterDirs.push(value);
       i = next + 1;
+    } else if (arg === '--no-verify-fixes') {
+      options.verifyFixes = false;
+      i++;
+    } else if (arg === '--verify-fixes') {
+      options.verifyFixes = true;
+      i++;
     } else {
       // 未知参数，跳过
       i++;
@@ -932,47 +946,6 @@ function parseOptions(args: string[]): {
   }
 
   return options;
-}
-
-/**
- * Load custom reporter plugins from a directory.
- * Scans for *-reporter.ts / *-reporter.js files, dynamically imports them,
- * and registers them in the given registry.
- */
-async function loadReporterPlugins(
-  registry: ReturnType<typeof createDefaultRegistry>,
-  dirPath: string
-): Promise<void> {
-  const { readdirSync } = await import('node:fs');
-  const { resolve } = await import('node:path');
-  const { pathToFileURL } = await import('node:url');
-
-  let entries: string[];
-  try {
-    entries = readdirSync(dirPath);
-  } catch {
-    return; // Directory doesn't exist or can't be read
-  }
-
-  const reporterFiles = entries.filter(
-    (f) => (f.endsWith('-reporter.ts') || f.endsWith('-reporter.js')) && !f.startsWith('.')
-  );
-
-  for (const file of reporterFiles) {
-    const fullPath = resolve(dirPath, file);
-    try {
-      const mod = await import(pathToFileURL(fullPath).href);
-      const plugin = mod.default || mod.plugin;
-      if (plugin && plugin.name && plugin.execute && typeof plugin.execute === 'function') {
-        registry.register(plugin);
-      } else {
-        console.error(`Warning: ${file} does not export a valid ReporterPlugin`);
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`Warning: Failed to load reporter plugin ${file}: ${msg}`);
-    }
-  }
 }
 
 /**
@@ -1016,19 +989,6 @@ async function runReviewCommand(
     process.exit(1);
   }
 
-  // Load previous review if specified
-  let previousReviewData: PreviousReviewData | undefined;
-  if (options.previousReview) {
-    try {
-      previousReviewData = loadPreviousReview(options.previousReview);
-      validatePreviousReviewData(previousReviewData);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Error: Failed to load previous review: ${message}`);
-      process.exit(1);
-    }
-  }
-
   // In JSON logs mode, skip the banner - all output is JSON events
   if (!options.jsonLogs) {
     const configInfo =
@@ -1039,16 +999,13 @@ async function runReviewCommand(
       options.customAgentsDirs.length > 0
         ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
         : '';
-    const prevReviewInfo = previousReviewData
-      ? `Prev Review:   ${options.previousReview} (${previousReviewData.issues.length} issues)`
-      : '';
 
     if (hasExternalDiff) {
       console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${resolve(repoPath)}
-Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
     } else {
@@ -1061,7 +1018,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
 Repository:    ${resolve(repoPath)}
 ${sourceLabel}: ${sourceRef}
 ${targetLabel}: ${targetRef}
-Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
     }
@@ -1080,54 +1037,18 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
   // Load merged config (global + local) for review settings
   const fileConfig = loadConfig();
 
-  // ── Pre-validate exporter reporters BEFORE starting the review ──
-  // This ensures we fail fast (e.g., invalid JIRA token, missing project)
-  // rather than wasting time on a full review that can't be exported.
-  const reporterNames = options.reporters.length > 0 ? [...options.reporters] : ['markdown'];
+  // Determine issue management plugin (CLI > config file > undefined)
+  const issueManagementPlugin = options.issueManagement || fileConfig.issueManagement || undefined;
 
-  // Auto-enable JIRA reporter when JIRA config exists in config files
-  if (
-    fileConfig.jira &&
-    Object.keys(fileConfig.jira).length > 0 &&
-    !reporterNames.includes('jira')
-  ) {
-    reporterNames.push('jira');
-  }
-
-  const registry = createDefaultRegistry();
-
-  // Load custom reporter plugins from directories
-  for (const dir of options.reporterDirs) {
-    try {
-      await loadReporterPlugins(registry, dir);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`Warning: Failed to load reporter plugins from ${dir}: ${msg}`);
-    }
-  }
-
-  // Merge JIRA config from config file into reporterOpts (CLI opts take precedence)
-  const mergedReporterOpts = { ...options.reporterOpts };
+  // Build plugin config from file config
+  const pluginConfig: Record<string, unknown> = {};
   if (fileConfig.jira && Object.keys(fileConfig.jira).length > 0) {
-    const jiraFromFile: Record<string, string | boolean> = {};
-    for (const [k, v] of Object.entries(fileConfig.jira)) {
-      if (v !== undefined) jiraFromFile[k] = v;
-    }
-    mergedReporterOpts['jira'] = { ...jiraFromFile, ...mergedReporterOpts['jira'] };
+    // Merge JIRA config from file
+    Object.assign(pluginConfig, fileConfig.jira);
   }
 
-  // Validate exporter reporters (e.g., JIRA token & project)
-  const exporterNames = reporterNames.filter((n) => registry.get(n)?.type === 'exporter');
-  if (exporterNames.length > 0) {
-    try {
-      await registry.validateAll(exporterNames, mergedReporterOpts);
-    } catch (validationError) {
-      const msg =
-        validationError instanceof Error ? validationError.message : String(validationError);
-      console.error(`Reporter validation failed: ${msg}`);
-      process.exit(1);
-    }
-  }
+  // Determine output format (CLI > config file > summary)
+  const outputFormat = options.output || fileConfig.output || 'summary';
 
   // Use the new reviewByRefs API which auto-detects ref types
   const report = await reviewByRefs({
@@ -1143,7 +1064,6 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       // Use JSON logs mode if specified, otherwise auto-detect
       progressMode: options.jsonLogs ? 'json' : 'auto',
       // Fix verification options
-      previousReviewData,
       verifyFixes: options.verifyFixes,
       // Worktree requirement
       requireWorktree: options.requireWorktree,
@@ -1153,6 +1073,11 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       abortController: softAbortController,
       // Max concurrent agent API calls (from config, defaults applied downstream)
       maxConcurrency: fileConfig.maxConcurrency,
+      // Issue management plugin
+      issueManagementPlugin,
+      pluginConfig,
+      // Output format
+      outputFormat,
     },
   });
 
@@ -1174,104 +1099,10 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       }
     }
   } else {
-    // Use reporter plugin system (registry & config already set up above)
-    const authorEmail = sourceRef ? getLastCommitAuthor(repoPath, sourceRef) : undefined;
-    const reporterContext: ReporterContext = {
-      repoPath,
-      sourceRef: sourceRef ?? undefined,
-      targetRef: targetRef ?? undefined,
-      language: options.language,
-      verbose: options.verbose,
-      authorEmail,
-    };
-
-    const { results, updatedReport } = await registry.executeAll(
-      reporterNames,
-      report,
-      reporterContext,
-      mergedReporterOpts
-    );
-
-    // Output formatter results to stdout
-    for (const result of results) {
-      if (result.output && result.success) {
-        const plugin = registry.get(result.reporter);
-        if (plugin?.type === 'formatter') {
-          console.log(result.output);
-        } else {
-          // Exporter output goes to stderr
-          if (process.stderr.writable) {
-            try {
-              process.stderr.write(result.output + '\n');
-            } catch {
-              // Ignore write errors
-            }
-          }
-        }
-      }
-      if (!result.success && result.error) {
-        console.error(`Reporter '${result.reporter}' failed: ${result.error}`);
-      }
-    }
-
-    // Sync external systems if fix verification was performed
-    if (options.verifyFixes && previousReviewData && updatedReport.fix_verification) {
-      const prevReport: ReviewReport = {
-        summary: '',
-        risk_level: 'low',
-        issues: previousReviewData.issues.map((i) => ({
-          ...i,
-          validation_status: 'confirmed' as const,
-          grounding_evidence: {
-            checked_files: [],
-            checked_symbols: [],
-            related_context: '',
-            reasoning: '',
-          },
-          final_confidence: i.confidence ?? 0.8,
-        })),
-        checklist: [],
-        metrics: {
-          total_scanned: 0,
-          confirmed: 0,
-          rejected: 0,
-          uncertain: 0,
-          by_severity: { critical: 0, error: 0, warning: 0, suggestion: 0 },
-          by_category: {
-            security: 0,
-            logic: 0,
-            performance: 0,
-            style: 0,
-            maintainability: 0,
-          },
-          files_reviewed: 0,
-        },
-        metadata: { review_time_ms: 0, tokens_used: 0, agents_used: [] },
-      };
-
-      const syncResults = await registry.syncAll(
-        reporterNames,
-        updatedReport,
-        prevReport,
-        reporterContext,
-        mergedReporterOpts
-      );
-
-      for (const result of syncResults) {
-        if (result.output) {
-          if (process.stderr.writable) {
-            try {
-              process.stderr.write(result.output + '\n');
-            } catch {
-              // Ignore write errors
-            }
-          }
-        }
-        if (!result.success && result.error) {
-          console.error(`Reporter sync '${result.reporter}' failed: ${result.error}`);
-        }
-      }
-    }
+    // Use built-in formatters for output
+    const { formatReport } = await import('./review/formatters.js');
+    const { output } = formatReport(report, outputFormat);
+    console.log(output);
   }
 }
 

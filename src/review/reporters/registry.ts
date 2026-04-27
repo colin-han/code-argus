@@ -4,14 +4,8 @@
  * Central registry for managing and executing reporter plugins.
  */
 
-import type { ReviewReport, ValidatedIssue } from '../types.js';
-import type {
-  ReporterPlugin,
-  ReporterContext,
-  ReporterConfig,
-  ReporterResult,
-  IssueUpdate,
-} from './types.js';
+import type { ReviewReport } from '../types.js';
+import type { ReporterPlugin, ReporterContext, ReporterConfig, ReporterResult } from './types.js';
 
 /**
  * Result of executing all reporters
@@ -19,8 +13,6 @@ import type {
 export interface ExecuteAllResult {
   /** Individual results from each reporter */
   results: ReporterResult[];
-  /** Updated report with issue updates (externalRefs) merged in */
-  updatedReport: ReviewReport;
 }
 
 /**
@@ -106,14 +98,11 @@ export class ReporterRegistry {
   }
 
   /**
-   * Execute selected reporters and merge issue updates back into the report.
+   * Execute selected reporters.
    *
    * Execution order:
    * 1. Formatters execute sequentially (deterministic output order)
    * 2. Exporters execute in parallel (independent side effects)
-   *
-   * After execution, any issueUpdates from exporter results are merged
-   * into the report's issues as externalRefs.
    */
   async executeAll(
     reporterNames: string[],
@@ -122,7 +111,6 @@ export class ReporterRegistry {
     configs: Record<string, ReporterConfig> = {}
   ): Promise<ExecuteAllResult> {
     const results: ReporterResult[] = [];
-    const allIssueUpdates: IssueUpdate[] = [];
 
     // Validate all requested reporters exist
     for (const name of reporterNames) {
@@ -153,10 +141,6 @@ export class ReporterRegistry {
 
         const result = await plugin.execute(report, context, config);
         results.push(result);
-
-        if (result.issueUpdates) {
-          allIssueUpdates.push(...result.issueUpdates);
-        }
       } catch (error) {
         results.push({
           reporter: name,
@@ -188,19 +172,10 @@ export class ReporterRegistry {
       });
 
       const exporterResults = await Promise.all(exporterPromises);
-      for (const result of exporterResults) {
-        results.push(result);
-        if (result.issueUpdates) {
-          allIssueUpdates.push(...result.issueUpdates);
-        }
-      }
+      results.push(...exporterResults);
     }
 
-    // Apply issue updates to report
-    const updatedReport =
-      allIssueUpdates.length > 0 ? applyIssueUpdates(report, allIssueUpdates) : report;
-
-    return { results, updatedReport };
+    return { results };
   }
 
   /**
@@ -245,34 +220,4 @@ export class ReporterRegistry {
 
     return results;
   }
-}
-
-/**
- * Apply issue updates from reporter results to the report.
- * Merges externalRefs into matching issues without overwriting existing refs.
- */
-function applyIssueUpdates(report: ReviewReport, updates: IssueUpdate[]): ReviewReport {
-  const issueMap = new Map(report.issues.map((i) => [i.id, { ...i }]));
-
-  for (const update of updates) {
-    const issue = issueMap.get(update.issueId);
-    if (!issue) continue;
-
-    // Merge externalRefs (don't overwrite existing ones from other systems)
-    if (update.externalRefs) {
-      const merged = { ...issue.externalRefs };
-      for (const [system, ref] of Object.entries(update.externalRefs)) {
-        // Only add ref if the system doesn't already have one
-        if (!merged[system]) {
-          merged[system] = ref;
-        }
-      }
-      issue.externalRefs = merged;
-    }
-  }
-
-  return {
-    ...report,
-    issues: report.issues.map((i) => issueMap.get(i.id) || i) as ValidatedIssue[],
-  };
 }

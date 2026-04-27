@@ -140,14 +140,7 @@ function isRateLimitError(error: unknown): boolean {
 const DEFAULT_OPTIONS: Required<
   Omit<
     OrchestratorOptions,
-    | 'onEvent'
-    | 'previousReviewData'
-    | 'verifyFixes'
-    | 'requireWorktree'
-    | 'abortController'
-    | 'issueManagementPlugin'
-    | 'pluginConfig'
-    | 'outputFormat'
+    'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree' | 'abortController' | 'issueManagementPlugin' | 'pluginConfig' | 'outputFormat'
   >
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
@@ -273,9 +266,7 @@ export class StreamingReviewOrchestrator {
           await this.issueManagementPlugin.validate(pluginConfig);
           this.progress.success(`插件验证成功: ${this.issueManagementPlugin.name}`);
         } catch (error) {
-          this.progress.error(
-            `插件验证失败: ${error instanceof Error ? error.message : String(error)}`
-          );
+          this.progress.error(`插件验证失败: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
         }
 
@@ -309,9 +300,7 @@ export class StreamingReviewOrchestrator {
             this.progress.info(`  状态分布: ${statusStr}`);
           }
         } catch (error) {
-          this.progress.warn(
-            `查询现有 issues 失败: ${error instanceof Error ? error.message : String(error)}`
-          );
+          this.progress.warn(`查询现有 issues 失败: ${error instanceof Error ? error.message : String(error)}`);
           // Continue without existing issues
           this.existingIssues = [];
         }
@@ -820,13 +809,6 @@ export class StreamingReviewOrchestrator {
       }
 
       this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
-
-      // Save issues via plugin (if configured)
-      await this.saveIssuesIfNeeded(report, {
-        repoPath: input.repoPath,
-        sourceRef: input.sourceBranch,
-        targetRef: input.targetBranch,
-      });
 
       return report;
     } finally {
@@ -1470,13 +1452,6 @@ export class StreamingReviewOrchestrator {
       }
 
       this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
-
-      // Save issues via plugin (if configured)
-      await this.saveIssuesIfNeeded(report, {
-        repoPath: input.repoPath,
-        sourceRef: sourceRef?.value || '',
-        targetRef: targetRef?.value || '',
-      });
 
       return report;
     } finally {
@@ -2736,82 +2711,68 @@ Write all text (title, description, suggestion) in Chinese.`,
 
     this.progress.complete(report.issues.length, endTime - startTime);
 
-    // Save issues via plugin (if configured)
-    await this.saveIssuesIfNeeded(report, {
-      repoPath: params.reviewRepoPath,
-      sourceRef: params.context.diff.sourceRef?.value || '',
-      targetRef: params.context.diff.targetRef?.value || '',
-    });
+    // Phase 5: Save issues via plugin (if configured)
+    if (this.issueManagementPlugin && this.existingIssues.length >= 0) {
+      this.progress.phase(5, 5, '保存 issues...');
+
+      // Capture input values in local variables to avoid scope issues
+      const repoPath = input.repoPath;
+      const sourceRef = input.sourceBranch;
+      const targetRef = input.targetBranch;
+      const branch = input.sourceBranch;
+
+      try {
+        const pluginContext: PluginContext = {
+          repoPath,
+          sourceRef,
+          targetRef,
+          branch,
+          language: 'zh',
+        };
+
+        const pluginConfig: PluginConfig = this.options.pluginConfig || {};
+
+        // Analyze diff to determine new and changed issues
+        const diffResult = analyzeDiff(report.issues, this.existingIssues);
+
+        this.progress.info(`差异分析: ${diffResult.newIssues.length} 新增, ${diffResult.matchedExisting.length} 匹配`);
+
+        // Save new issues
+        if (diffResult.newIssues.length > 0) {
+          const saveResult: SaveResult = await this.issueManagementPlugin.save(
+            diffResult.newIssues,
+            [], // Changed issues not implemented yet
+            pluginContext,
+            pluginConfig
+          );
+
+          if (saveResult.failed.length > 0) {
+            this.progress.error(`保存 ${saveResult.failed.length} 个 issues 失败`);
+            for (const { issue, error } of saveResult.failed) {
+              this.progress.error(`  ${issue.title}: ${error}`);
+            }
+          }
+
+          const savedCount = diffResult.newIssues.length - saveResult.failed.length;
+          if (savedCount > 0) {
+            this.progress.success(`成功保存 ${savedCount} 个新 issues`);
+          }
+
+          // Update report with new issue IDs (for JiraPlugin which replaces UUID with key)
+          if (saveResult.info?.keys) {
+            const keys = saveResult.info.keys as string[];
+            this.progress.info(`创建的 tickets: ${keys.join(', ')}`);
+          }
+        } else {
+          this.progress.info('无需保存新 issues');
+        }
+      } catch (error) {
+        this.progress.error(`保存 issues 失败: ${error instanceof Error ? error.message : String(error)}`);
+        // Don't throw - still return the report
+      }
+    }
 
     return report;
-  }
-
-  /**
-   * Save issues via Issue Management Plugin (if configured)
-   */
-  private async saveIssuesIfNeeded(
-    report: ReviewReport,
-    refs: { repoPath: string; sourceRef: string; targetRef?: string }
-  ): Promise<void> {
-    if (!this.issueManagementPlugin) {
-      return;
-    }
-
-    this.progress.phase(5, 5, '保存 issues...');
-
-    try {
-      const pluginContext: PluginContext = {
-        repoPath: refs.repoPath,
-        sourceRef: refs.sourceRef,
-        targetRef: refs.targetRef,
-        branch: refs.sourceRef,
-        language: 'zh',
-      };
-
-      const pluginConfig: PluginConfig = this.options.pluginConfig || {};
-
-      // Analyze diff to determine new and changed issues
-      const diffResult = analyzeDiff(report.issues, this.existingIssues);
-
-      this.progress.info(
-        `差异分析: ${diffResult.newIssues.length} 新增, ${diffResult.matchedExisting.length} 匹配`
-      );
-
-      // Save new issues
-      if (diffResult.newIssues.length > 0) {
-        const saveResult: SaveResult = await this.issueManagementPlugin.save(
-          diffResult.newIssues,
-          [], // Changed issues not implemented yet
-          pluginContext,
-          pluginConfig
-        );
-
-        if (saveResult.failed.length > 0) {
-          this.progress.error(`保存 ${saveResult.failed.length} 个 issues 失败`);
-          for (const { issue, error } of saveResult.failed) {
-            this.progress.error(`  ${issue.title}: ${error}`);
-          }
-        }
-
-        const savedCount = diffResult.newIssues.length - saveResult.failed.length;
-        if (savedCount > 0) {
-          this.progress.success(`成功保存 ${savedCount} 个新 issues`);
-        }
-
-        // Update report with new issue IDs (for JiraPlugin which replaces UUID with key)
-        if (saveResult.info?.keys) {
-          const keys = saveResult.info.keys as string[];
-          this.progress.info(`创建的 tickets: ${keys.join(', ')}`);
-        }
-      } else {
-        this.progress.info('无需保存新 issues');
-      }
-    } catch (error) {
-      this.progress.error(
-        `保存 issues 失败: ${error instanceof Error ? error.message : String(error)}`
-      );
-      // Don't throw - still return the report
-    }
   }
 }
 

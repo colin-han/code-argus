@@ -12,7 +12,10 @@ export type Severity = 'critical' | 'error' | 'warning' | 'suggestion';
 /** Issue categories */
 export type IssueCategory = 'security' | 'logic' | 'performance' | 'style' | 'maintainability';
 
-/** Validation status after verification */
+/** Issue status in the issue management system */
+export type IssueStatus = 'open' | 'resolved' | 'ignored';
+
+/** Validation status after verification (deprecated, use IssueStatus) */
 export type ValidationStatus = 'pending' | 'confirmed' | 'rejected' | 'uncertain';
 
 /** Risk level for overall PR */
@@ -131,8 +134,10 @@ export interface GroundingEvidence {
  * Validated issue (after verification by validator agent)
  */
 export interface ValidatedIssue extends RawIssue {
-  /** Validation status */
-  validation_status: ValidationStatus;
+  /** Issue status in the issue management system */
+  status: IssueStatus;
+  /** Validation status (deprecated, use status instead) */
+  validation_status?: ValidationStatus;
   /** Evidence collected during validation */
   grounding_evidence: GroundingEvidence;
   /** Final confidence score after validation (0-1) */
@@ -143,8 +148,6 @@ export interface ValidatedIssue extends RawIssue {
   revised_description?: string;
   /** Revised severity (if updated) */
   revised_severity?: Severity;
-  /** External system references (written back by reporter plugins) */
-  externalRefs?: Record<string, import('./reporters/types.js').ExternalReference>;
 }
 
 // ============================================================================
@@ -313,8 +316,6 @@ export interface PreviousIssue {
   confidence: number;
   /** Source agent that found this issue */
   source_agent: AgentType;
-  /** External system references (carried from previous review for sync) */
-  externalRefs?: Record<string, import('./reporters/types.js').ExternalReference>;
 }
 
 /**
@@ -559,6 +560,24 @@ export interface OrchestratorOptions {
    * Diffs exceeding this limit will be skipped entirely to avoid excessive resource usage
    */
   maxDiffSize?: number;
+  /**
+   * Issue Management Plugin to use (default: undefined = no plugin)
+   * When set, issues will be persisted to the external system automatically
+   * @deprecated Use plugin system instead
+   */
+  issueManagementPlugin?: 'local-file' | 'jira';
+  /**
+   * Plugin configuration (passed to plugin validate/query/save/sync methods)
+   * For jira plugin: { baseUrl, username, apiToken, projectKey, ... }
+   * For local-file plugin: {} (no config needed)
+   */
+  pluginConfig?: Record<string, unknown>;
+  /**
+   * Output format for terminal display (default: 'summary')
+   * This is separate from the issue management plugin - you can have JIRA plugin
+   * active while displaying summary in terminal
+   */
+  outputFormat?: 'summary' | 'markdown' | 'json';
 }
 
 /**

@@ -13,14 +13,7 @@ import { prCommentsReporter } from './pr-comments-reporter.js';
 import { jiraReporter } from './jira-reporter.js';
 
 // Types
-export type {
-  ReporterPlugin,
-  ReporterContext,
-  ReporterConfig,
-  ReporterResult,
-  IssueUpdate,
-  ExternalReference,
-} from './types.js';
+export type { ReporterPlugin, ReporterContext, ReporterConfig, ReporterResult } from './types.js';
 
 // Registry
 export { ReporterRegistry, type ExecuteAllResult } from './registry.js';

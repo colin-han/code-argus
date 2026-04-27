@@ -39,38 +39,6 @@ export interface ReporterContext {
 }
 
 // ============================================================================
-// External References & Issue Updates
-// ============================================================================
-
-/**
- * External system reference (e.g., JIRA issue)
- */
-export interface ExternalReference {
-  /** External system type */
-  system: string;
-  /** Unique ID in the external system (e.g., JIRA issue key: PROJ-123) */
-  externalId: string;
-  /** URL in the external system */
-  url?: string;
-  /** Current status in the external system */
-  status?: string;
-  /** Creation time */
-  createdAt: string;
-  /** Last update time */
-  updatedAt?: string;
-}
-
-/**
- * Update for a single issue (writeback from exporter plugins)
- */
-export interface IssueUpdate {
-  /** Issue ID to update (corresponds to ValidatedIssue.id) */
-  issueId: string;
-  /** External references to write back */
-  externalRefs?: Record<string, ExternalReference>;
-}
-
-// ============================================================================
 // Reporter Result
 // ============================================================================
 
@@ -88,12 +56,6 @@ export interface ReporterResult {
   error?: string;
   /** Plugin-specific result data */
   metadata?: Record<string, unknown>;
-  /**
-   * Issue update list for writeback
-   * Exporter plugins can use this to write back external system IDs to issues.
-   * For example, JIRA reporter writes back JIRA issue keys after creation.
-   */
-  issueUpdates?: IssueUpdate[];
 }
 
 // ============================================================================

@@ -32,6 +32,26 @@ export interface JiraConfig {
   labels?: string;
   /** Dry-run mode */
   dryRun?: boolean;
+
+  // === Issue Management Plugin extensions ===
+
+  /**
+   * Identification labels for recognizing Argus-created tickets
+   * Default: ["code-review", "auto-generated"]
+   */
+  identificationLabels?: string[];
+
+  /**
+   * Argus Issue status to JIRA status mapping
+   */
+  statusMapping?: {
+    /** JIRA statuses that map to 'open' */
+    open?: string[];
+    /** JIRA statuses that map to 'resolved' */
+    resolved?: string[];
+    /** JIRA statuses that map to 'ignored' */
+    ignored?: string[];
+  };
 }
 
 /**
@@ -54,6 +74,23 @@ export interface ArgusConfig {
   maxConcurrency?: number;
   /** JIRA integration configuration */
   jira?: JiraConfig;
+
+  // === Issue Management Plugin ===
+
+  /**
+   * Issue Management Plugin selection
+   * - "local-file": Local JSON files (default)
+   * - "jira": JIRA integration
+   */
+  issueManagement?: 'local-file' | 'jira';
+
+  /**
+   * Output format for terminal display
+   * - "summary": Summary only (default)
+   * - "markdown": Full output
+   * - "json": Machine-readable
+   */
+  output?: 'summary' | 'markdown' | 'json';
 }
 
 // ---------------------------------------------------------------------------

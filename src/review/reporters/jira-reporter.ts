@@ -16,13 +16,7 @@
  *   - dryRun: If true, simulate without creating issues (default: false)
  */
 
-import type {
-  ReporterPlugin,
-  ReporterContext,
-  ReporterConfig,
-  ReporterResult,
-  IssueUpdate,
-} from './types.js';
+import type { ReporterPlugin, ReporterContext, ReporterConfig, ReporterResult } from './types.js';
 import type { ReviewReport, ValidatedIssue } from '../types.js';
 
 const SEVERITY_ORDER: Record<string, number> = {
@@ -408,7 +402,6 @@ export const jiraReporter: ReporterPlugin = {
     }
 
     const createdIssues: Array<{ key: string; summary: string; issueId: string }> = [];
-    const issueUpdates: IssueUpdate[] = [];
     const errors: string[] = [];
     const assignedIssues: string[] = [];
 
@@ -427,7 +420,7 @@ export const jiraReporter: ReporterPlugin = {
 
     for (const issue of issuesToReport) {
       // Skip issues that already have a JIRA reference
-      if (issue.externalRefs?.jira) {
+      if ((issue as { externalRefs?: Record<string, unknown> }).externalRefs?.jira) {
         continue;
       }
 
@@ -443,18 +436,6 @@ export const jiraReporter: ReporterPlugin = {
       if (dryRun) {
         const summary = (payload.fields as Record<string, unknown>).summary as string;
         createdIssues.push({ key: 'DRY-RUN', summary, issueId: issue.id });
-        issueUpdates.push({
-          issueId: issue.id,
-          externalRefs: {
-            jira: {
-              system: 'jira',
-              externalId: 'DRY-RUN',
-              url: `${baseUrl}/browse/DRY-RUN`,
-              status: 'Open',
-              createdAt: new Date().toISOString(),
-            },
-          },
-        });
         continue;
       }
 
@@ -477,20 +458,6 @@ export const jiraReporter: ReporterPlugin = {
             assignedIssues.push(result.key);
           }
         }
-
-        // Write back JIRA reference
-        issueUpdates.push({
-          issueId: issue.id,
-          externalRefs: {
-            jira: {
-              system: 'jira',
-              externalId: result.key,
-              url: `${baseUrl.replace(/\/$/, '')}/browse/${result.key}`,
-              status: 'Open',
-              createdAt: new Date().toISOString(),
-            },
-          },
-        });
       } catch (error) {
         errors.push(
           `Failed to create JIRA issue for "${issue.title}": ${error instanceof Error ? error.message : String(error)}`
@@ -532,7 +499,6 @@ export const jiraReporter: ReporterPlugin = {
         issues: createdIssues.map((ci) => ({ key: ci.key, summary: ci.summary })),
         dryRun,
       },
-      issueUpdates,
     };
   },
 
@@ -554,7 +520,8 @@ export const jiraReporter: ReporterPlugin = {
     for (const result of fixResults) {
       // Find the corresponding JIRA reference from the previous report
       const prevIssue = prevReport.issues.find((i) => i.id === result.original_issue_id);
-      const jiraRef = prevIssue?.externalRefs?.jira;
+      const jiraRef = (prevIssue as { externalRefs?: Record<string, { externalId: string }> })
+        .externalRefs?.jira;
       if (!jiraRef) continue;
 
       const issueKey = jiraRef.externalId;

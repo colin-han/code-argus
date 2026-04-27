@@ -37,7 +37,7 @@ export function loadPreviousReview(filePath: string): PreviousReviewData {
     content = readFileSync(absolutePath, 'utf-8');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to read file: ${message}`);
+    throw new Error(`Failed to read file: ${message}`, { cause: error });
   }
 
   // Parse JSON
@@ -46,7 +46,7 @@ export function loadPreviousReview(filePath: string): PreviousReviewData {
     data = JSON.parse(content);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Invalid JSON format: ${message}`);
+    throw new Error(`Invalid JSON format: ${message}`, { cause: error });
   }
 
   // Validate structure

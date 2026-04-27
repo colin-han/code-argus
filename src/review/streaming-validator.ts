@@ -523,7 +523,7 @@ export class StreamingValidator {
           this.completedCount,
           this.totalEnqueued,
           validatedIssue.id,
-          validatedIssue.validation_status
+          validatedIssue.validation_status ?? 'pending'
         );
       }
 
@@ -1045,6 +1045,7 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
       code_snippet: issue.code_snippet,
       confidence: issue.confidence,
       source_agent: issue.source_agent,
+      status: 'open' as const,
       validation_status: response.validation_status,
       grounding_evidence: response.grounding_evidence,
       final_confidence: response.final_confidence,
@@ -1066,6 +1067,7 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
       code_snippet: issue.code_snippet,
       confidence: issue.confidence,
       source_agent: issue.source_agent,
+      status: 'open' as const,
       validation_status: 'uncertain',
       grounding_evidence: {
         checked_files: [],
@@ -1091,6 +1093,7 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
       code_snippet: issue.code_snippet,
       confidence: issue.confidence,
       source_agent: issue.source_agent,
+      status: 'open' as const,
       validation_status: 'rejected',
       grounding_evidence: {
         checked_files: [],
@@ -1140,6 +1143,7 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
       code_snippet: issue.code_snippet,
       confidence: issue.confidence,
       source_agent: issue.source_agent,
+      status: 'open' as const,
       validation_status: finalStatus,
       grounding_evidence: {
         ...lastResponse.grounding_evidence,

@@ -138,8 +138,6 @@ export {
   type ReporterContext,
   type ReporterConfig,
   type ReporterResult,
-  type IssueUpdate,
-  type ExternalReference,
   type ExecuteAllResult,
   markdownReporter,
   jsonReporter,
