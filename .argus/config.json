@@ -1,5 +1,6 @@
 {
   "jira": {
     "projectKey": "COL"
-  }
+  },
+  "issueManagement": "jira"
 }

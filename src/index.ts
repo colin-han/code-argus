@@ -363,6 +363,10 @@ Keys:
   light-model        Model for agent selection and custom agent matching
   dedup-model        Model for realtime issue deduplication
   max-concurrency    Max concurrent agent API calls (default: 2)
+
+  issue-management   Issue management plugin: local-file | jira
+  output             Output format: summary | markdown | json
+
   jira.base-url      JIRA server URL (e.g. https://org.atlassian.net)
   jira.username      JIRA username / email
   jira.api-token     JIRA API token
@@ -371,6 +375,8 @@ Keys:
   jira.min-severity  Minimum severity to report (default: warning)
   jira.labels        Labels (comma-separated)
   jira.dry-run       Dry-run mode (true/false)
+  jira.identification-labels  Labels for recognizing Argus tickets (comma-separated)
+  jira.status-mapping JSON mapping Argus status → JIRA statuses
 
 Options:
   --local              Save/read from repo-local config (<repoPath>/.argus/config.json)
@@ -381,6 +387,9 @@ Examples:
   argus config set base-url https://my-proxy.com/v1
   argus config set model claude-sonnet-4-5-20250929
   argus config set agent-model qwen3-coder-plus
+  argus config set issue-management jira
+  argus config set output markdown
+  argus config set jira.identification-labels "code-review,auto-generated"
   argus config set --local model qwen3-coder-plus           # Save to repo-local config (cwd)
   argus config set --local --repo=/path/to/repo model xxx   # Save to specific repo config
   argus config list                                         # Show merged config
@@ -484,6 +493,11 @@ const TOP_LEVEL_KEY_MAP: Record<string, keyof ArgusConfig> = {
   dedupmodel: 'dedupModel',
   'max-concurrency': 'maxConcurrency',
   maxconcurrency: 'maxConcurrency',
+  // Issue Management Plugin
+  'issue-management': 'issueManagement',
+  issuemanagement: 'issueManagement',
+  // Output format
+  output: 'output',
 };
 
 // Map CLI key names to jira config keys
@@ -502,12 +516,19 @@ const JIRA_KEY_MAP: Record<string, keyof JiraConfig> = {
   'jira.labels': 'labels',
   'jira.dry-run': 'dryRun',
   'jira.dryrun': 'dryRun',
+  // Issue Management Plugin extensions
+  'jira.identification-labels': 'identificationLabels',
+  'jira.identificationlabels': 'identificationLabels',
+  'jira.status-mapping': 'statusMapping',
+  'jira.statusmapping': 'statusMapping',
 };
 
 const ALL_VALID_KEYS =
   'api-key, base-url, model, agent-model, light-model, dedup-model, max-concurrency, ' +
+  'issue-management, output, ' +
   'jira.base-url, jira.username, jira.api-token, jira.project-key, ' +
-  'jira.issue-type, jira.min-severity, jira.labels, jira.dry-run';
+  'jira.issue-type, jira.min-severity, jira.labels, jira.dry-run, ' +
+  'jira.identification-labels, jira.status-mapping';
 
 /**
  * Resolve a CLI key to either a top-level or jira config mutation.
@@ -546,13 +567,40 @@ function buildConfigPatch(key: string, rawValue: string): ArgusConfig | undefine
       }
       return { maxConcurrency: n };
     }
+    // Validate issue-management values
+    if (topKey === 'issueManagement') {
+      if (rawValue !== 'local-file' && rawValue !== 'jira') {
+        throw new Error(`issue-management must be 'local-file' or 'jira', got: ${rawValue}`);
+      }
+      return { issueManagement: rawValue };
+    }
+    // Validate output values
+    if (topKey === 'output') {
+      if (rawValue !== 'summary' && rawValue !== 'markdown' && rawValue !== 'json') {
+        throw new Error(`output must be 'summary', 'markdown', or 'json', got: ${rawValue}`);
+      }
+      return { output: rawValue };
+    }
     return { [topKey]: rawValue } as ArgusConfig;
   }
   if (jiraKey) {
     // Parse boolean values for dryRun
-    let parsed: string | boolean = rawValue;
+    let parsed: string | boolean | string[] | Record<string, string[]> = rawValue;
     if (jiraKey === 'dryRun') {
       parsed = rawValue === 'true';
+    } else if (jiraKey === 'identificationLabels') {
+      // Parse comma-separated labels
+      parsed = rawValue
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } else if (jiraKey === 'statusMapping') {
+      // Parse JSON object
+      try {
+        parsed = JSON.parse(rawValue) as Record<string, string[]>;
+      } catch {
+        throw new Error(`status-mapping must be valid JSON, got: ${rawValue}`);
+      }
     }
     return { jira: { [jiraKey]: parsed } as JiraConfig };
   }
